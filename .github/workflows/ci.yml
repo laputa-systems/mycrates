@@ -36,5 +36,7 @@ jobs:
           persist-credentials: false
       - name: setup rust
         run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: pre-fetch dependencies
+        run: cargo fetch --locked
       - name: test network none
-        run: docker run --network none -v ${{ github.workspace }}:/workspace -w /workspace rust:1.99 bash -c "cargo test --locked"
+        run: docker run --network none -v ${{ github.workspace }}:/workspace -v ~/.cargo/registry:/usr/local/cargo/registry:ro -v ~/.cargo/git:/usr/local/cargo/git:ro -w /workspace rust:1.99 bash -c "cargo test --locked"

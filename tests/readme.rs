@@ -174,7 +174,11 @@ fn execute_readme_verified_blocks() {
         .output()
         .expect("build mycrates binary");
     assert!(build_out.status.success(), "cargo build mycrates failed");
-    let bin_path = root_dir.join("target/debug/mycrates");
+
+    let target_dir = std::env::var("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| root_dir.join("target"));
+    let bin_path = target_dir.join("debug/mycrates");
 
     // Setup fixture environment
     let work_dir = tempdir().unwrap();

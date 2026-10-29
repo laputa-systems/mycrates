@@ -169,6 +169,7 @@ fn fetch_trust_chain_and_idempotence() {
             source: "registry+https://github.com/rust-lang/crates.io-index".to_string(),
         }],
         unsupported: vec![],
+        ..Default::default()
     };
     write_pins(&store.pins_dir().join("default.toml"), &pins).unwrap();
 
@@ -236,6 +237,7 @@ fn lock_index_checksum_mismatch() {
             source: "registry+https://github.com/rust-lang/crates.io-index".to_string(),
         }],
         unsupported: vec![],
+        ..Default::default()
     };
     write_pins(&store.pins_dir().join("default.toml"), &pins).unwrap();
 
@@ -297,6 +299,7 @@ fn download_bytes_checksum_mismatch() {
             source: "registry+https://github.com/rust-lang/crates.io-index".to_string(),
         }],
         unsupported: vec![],
+        ..Default::default()
     };
     write_pins(&store.pins_dir().join("default.toml"), &pins).unwrap();
 
@@ -353,6 +356,7 @@ fn missing_version_fails_closed() {
             source: "registry+https://github.com/rust-lang/crates.io-index".to_string(),
         }],
         unsupported: vec![],
+        ..Default::default()
     };
     write_pins(&store.pins_dir().join("default.toml"), &pins).unwrap();
 
@@ -410,6 +414,7 @@ fn fetch_budget_limit() {
             source: "registry+https://github.com/rust-lang/crates.io-index".to_string(),
         }],
         unsupported: vec![],
+        ..Default::default()
     };
     write_pins(&store.pins_dir().join("default.toml"), &pins).unwrap();
 
