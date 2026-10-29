@@ -58,12 +58,7 @@ pub fn classify(pkg: &LockPackage) -> Classified {
             if src.starts_with("git+") {
                 Classified { pkg: pkg.clone(), kind: PkgKind::Git }
             } else if src.starts_with("registry+") {
-                // registry+https://... or registry+<name>
                 if src.contains("index.crates.io") || src == "registry+https://github.com/rust-lang/crates.io-index" {
-                    // crates.io
-                    if pkg.checksum.is_none() {
-                        // will be error per rules
-                    }
                     Classified { pkg: pkg.clone(), kind: PkgKind::CratesIo }
                 } else {
                     Classified { pkg: pkg.clone(), kind: PkgKind::AlternateRegistry { url: src.clone() } }

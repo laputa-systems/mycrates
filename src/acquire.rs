@@ -78,10 +78,8 @@ pub fn fetch(state_dir: &Path, config: &Config) -> Result<FetchSummary> {
     let mut bytes_budget = config.limits.fetch_bytes;
 
     for item in items {
-        // 1. Fetch index entry from upstream sparse index
         let (raw_line, index_entry) = client.fetch_index_entry(&item.name, &item.version)?;
 
-        // 2. Trust chain verification 1: lock checksum must equal index checksum
         if index_entry.cksum != item.checksum {
             return Err(Error::Integrity(format!(
                 "trust chain violation for {} {}: pin checksum {} != index cksum {}",
@@ -89,10 +87,8 @@ pub fn fetch(state_dir: &Path, config: &Config) -> Result<FetchSummary> {
             )));
         }
 
-        // 3. Expand dl template
         let dl_url = client.expand_dl_url(&dl_template, &item.name, &item.version, &item.checksum)?;
 
-        // 4. Download and scan
         let crate_bytes = client.download_crate(&dl_url, &item.checksum, &item.name, &item.version)?;
         let byte_len = crate_bytes.len() as u64;
 
@@ -102,13 +98,11 @@ pub fn fetch(state_dir: &Path, config: &Config) -> Result<FetchSummary> {
         bytes_budget -= byte_len;
         summary.total_bytes += byte_len;
 
-        // 5. Ingest into store
         let ingested_sha = store.ingest_blob(&crate_bytes[..])?;
         if ingested_sha != item.checksum {
             return Err(Error::Integrity("ingested checksum mismatch".to_string()));
         }
 
-        // 6. Write upstream record
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())

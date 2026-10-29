@@ -94,7 +94,6 @@ impl<'a> Publisher<'a> {
             return Err(Error::Integrity(format!("missing blob in store: {}", sha256)));
         }
 
-        // Rehash blob before publishing
         let mut f = File::open(&src_blob)?;
         let mut hasher = Sha256::new();
         let mut buf = [0u8; 8192];
@@ -130,11 +129,9 @@ impl<'a> Publisher<'a> {
         fs::create_dir_all(self.blobs_dir())?;
         fs::create_dir_all(self.generations_dir())?;
 
-        // 1. Load records from store
         let native_records = self.store.load_native_records()?;
         let upstream_records = self.store.load_upstream_records()?;
 
-        // 2. Sync and verify all required blobs first
         for rec in &native_records {
             self.sync_blob(&rec.checksum)?;
         }
@@ -142,7 +139,6 @@ impl<'a> Publisher<'a> {
             self.sync_blob(&rec.checksum)?;
         }
 
-        // 3. Set up staging directory
         let pid = std::process::id();
         let cnt = STAGING_COUNTER.fetch_add(1, Ordering::SeqCst);
         let nanos = SystemTime::now()
@@ -158,10 +154,8 @@ impl<'a> Publisher<'a> {
         fs::create_dir_all(&staging_registry)?;
         fs::create_dir_all(&staging_mirror)?;
 
-        // Map of (view, rel_path) -> sha256 for canonical generation id computation
         let mut manifest: BTreeMap<(String, String), String> = BTreeMap::new();
 
-        // 4. Render native registry config.json
         let native_cfg = native_config_json(&self.public_base_url);
         let native_cfg_path = staging_registry.join("config.json");
         fs::write(&native_cfg_path, &native_cfg)?;
@@ -169,7 +163,6 @@ impl<'a> Publisher<'a> {
         h.update(native_cfg.as_bytes());
         manifest.insert(("registry".to_string(), "config.json".to_string()), format!("{:x}", h.finalize_reset()));
 
-        // 5. Render mirror config.json
         let mirror_cfg = mirror_config_json(&self.public_base_url);
         let mirror_cfg_path = staging_mirror.join("config.json");
         fs::write(&mirror_cfg_path, &mirror_cfg)?;
@@ -177,7 +170,6 @@ impl<'a> Publisher<'a> {
         h.update(mirror_cfg.as_bytes());
         manifest.insert(("crates-io".to_string(), "config.json".to_string()), format!("{:x}", h.finalize_reset()));
 
-        // 6. Group native records by crate name
         let mut native_by_crate: BTreeMap<String, Vec<&crate::store::NativeRecord>> = BTreeMap::new();
         for rec in &native_records {
             let lower = CrateName::new(&rec.name)?.lower();
@@ -185,7 +177,6 @@ impl<'a> Publisher<'a> {
         }
 
         for (crate_lower, mut recs) in native_by_crate {
-            // Sort versions by semver
             recs.sort_by(|a, b| {
                 let va = semver::Version::parse(&a.vers);
                 let vb = semver::Version::parse(&b.vers);
@@ -214,7 +205,6 @@ impl<'a> Publisher<'a> {
             manifest.insert(("registry".to_string(), shard), format!("{:x}", h.finalize_reset()));
         }
 
-        // 7. Group upstream records by crate name
         let mut upstream_by_crate: BTreeMap<String, Vec<&crate::store::UpstreamRecord>> = BTreeMap::new();
         for rec in &upstream_records {
             let lower = CrateName::new(&rec.name)?.lower();
@@ -249,7 +239,6 @@ impl<'a> Publisher<'a> {
             manifest.insert(("crates-io".to_string(), shard), format!("{:x}", h.finalize_reset()));
         }
 
-        // 8. Compute canonical generation ID
         let mut canonical_text = format!("v:{}\n", RENDERER_VERSION);
         for ((view, path), sha) in &manifest {
             canonical_text.push_str(&format!("{}|{}|{}\n", view, path, sha));
@@ -274,14 +263,12 @@ impl<'a> Publisher<'a> {
             }
         }
 
-        // Move staging to generations/<gen_id> if not already there
         if !target_gen_dir.exists() {
             fs::rename(&staging_dir, &target_gen_dir)?;
         } else {
             let _ = fs::remove_dir_all(&staging_dir);
         }
 
-        // 10. Atomically switch `current` symlink
         let tmp_link_name = format!(".current.tmp.{}.{}.{}", pid, nanos, cnt);
         let tmp_link = self.site_dir.join(&tmp_link_name);
         let rel_target = format!("generations/{}", gen_id);

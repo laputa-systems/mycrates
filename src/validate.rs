@@ -28,7 +28,6 @@ pub fn validate_project(
         .clone()
         .unwrap_or_else(|| pins_path.file_stem().unwrap().to_string_lossy().to_string());
 
-    // 1. Check all registry packages are archived
     for pin in &pins.registry {
         let rec_path = store
             .upstream_dir()
@@ -46,7 +45,6 @@ pub fn validate_project(
 
     let is_partial = !pins.unsupported.is_empty();
 
-    // 2. If lock_content and a lock_path exist or if we can run cargo verification:
     if let Some(ref lock_str) = pins.lock_content {
         let val_tmp = state_dir.join(format!(".validate_tmp_{}", std::process::id()));
         let _ = fs::remove_dir_all(&val_tmp);
@@ -55,7 +53,6 @@ pub fn validate_project(
         fs::create_dir_all(test_proj.join("src"))?;
         fs::write(test_proj.join("src/lib.rs"), "")?;
 
-        // Reconstruct Cargo.toml with dependencies from lockfile
         let mut deps_str = String::new();
         for pin in &pins.registry {
             deps_str.push_str(&format!("{} = \"={}\"\n", pin.name, pin.version));
@@ -75,7 +72,6 @@ pub fn validate_project(
         );
         fs::write(cargo_home.join("config.toml"), cargo_config)?;
 
-        // Run cargo metadata --locked proxy-denied
         let mut cmd = Command::new("cargo");
         cmd.current_dir(&test_proj);
         cmd.env("CARGO_HOME", &cargo_home);
@@ -91,7 +87,6 @@ pub fn validate_project(
             return Err(Error::Operation(format!("cargo metadata --locked failed: {stderr}")));
         }
 
-        // Run cargo fetch --locked proxy-denied
         let mut cmd_fetch = Command::new("cargo");
         cmd_fetch.current_dir(&test_proj);
         cmd_fetch.env("CARGO_HOME", &cargo_home);
@@ -109,7 +104,6 @@ pub fn validate_project(
             return Err(Error::Operation(format!("cargo fetch --locked failed: {stderr}")));
         }
 
-        // Check that Cargo.lock was unchanged
         let lock_after = fs::read_to_string(test_proj.join("Cargo.lock"))?;
         let _ = fs::remove_dir_all(&val_tmp);
         if &lock_after != lock_str {

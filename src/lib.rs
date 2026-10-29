@@ -5,7 +5,6 @@ pub mod cli;
 pub mod config;
 pub mod error;
 
-// Modules reserved for later milestones
 pub mod acquire;
 pub mod crate_file;
 pub mod index;

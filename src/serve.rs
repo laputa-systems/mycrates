@@ -96,7 +96,6 @@ pub fn handle_publish_request<R: Read>(
     reader: &mut R,
     cfg: &ServeConfig,
 ) -> Result<()> {
-    // Check authentication
     if cfg.auth_required || cfg.token.is_some() {
         if let Some(ref exp_token) = cfg.token {
             let auth_hdr = headers
@@ -155,7 +154,6 @@ pub fn handle_publish_request<R: Read>(
             }
         };
 
-        // Scan crate archive
         let scan_limits = ScanLimits {
             max_compressed: cfg.limits.max_compressed,
             max_expanded: cfg.limits.max_expanded,
@@ -180,10 +178,8 @@ pub fn handle_publish_request<R: Read>(
             }
         };
 
-        // Acquire lock
         let _guard = store.lock_exclusive()?;
 
-        // Ingest blob
         let blob_sha = store.ingest_blob(&decoded.crate_bytes[..])?;
         if blob_sha != scan_res.checksum {
             send_error(stream, 400, "checksum mismatch");
@@ -221,7 +217,6 @@ pub fn handle_publish_request<R: Read>(
             }
         }
 
-        // Generate updated site
         if let Err(e) = publisher.publish() {
             send_error(stream, 500, &e.to_string());
             return Ok(());
@@ -243,7 +238,6 @@ pub fn handle_publish_request<R: Read>(
         || (method == "PUT" && path.ends_with("/unyank"))
     {
         let is_yank = method == "DELETE";
-        // path: /api/v1/crates/{name}/{version}/{yank|unyank}
         let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
         if parts.len() == 6 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "crates" {
             let crate_name = parts[3];

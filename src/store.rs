@@ -353,7 +353,6 @@ impl Store {
             }
         }
 
-        // Verify native records point to existing valid blobs
         for rec in self.load_native_records()? {
             let blob_path = self.blobs_dir().join(format!("{}.crate", rec.checksum));
             if !blob_path.exists() {
@@ -366,7 +365,6 @@ impl Store {
             }
         }
 
-        // Verify upstream records point to existing valid blobs
         for rec in self.load_upstream_records()? {
             let blob_path = self.blobs_dir().join(format!("{}.crate", rec.checksum));
             if !blob_path.exists() {

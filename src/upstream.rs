@@ -162,7 +162,6 @@ impl UpstreamClient {
             )));
         }
 
-        // Structural scan of downloaded crate
         let scan_limits = ScanLimits {
             max_compressed: self.limits.max_compressed,
             max_expanded: self.limits.max_expanded,
