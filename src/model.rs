@@ -68,6 +68,10 @@ impl Version {
     pub fn full(&self) -> String {
         format!("{}{}{}", self.key(), if self.0.pre.is_empty() { String::new() } else { format!("-{}", self.0.pre) }, "")
     }
+
+    pub fn as_str(&self) -> String {
+        self.full()
+    }
 }
 
 impl fmt::Display for Version {

@@ -1,6 +1,5 @@
 use crate::error::{Error, Result};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Lockfile {

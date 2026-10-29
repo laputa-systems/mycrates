@@ -1,5 +1,64 @@
-use crate::error::{Error, Result};
+use crate::error::Result;
+use crate::pins::Pins;
+use crate::store::Store;
+use std::env;
+use std::fs;
+use std::path::PathBuf;
 
-pub fn run(_args: &[String]) -> Result<()> {
-    Err(Error::Operation("unimplemented".to_string()))
+pub fn run(args: &[String]) -> Result<()> {
+    let mut state_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(".work/state");
+
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--state-dir" && i + 1 < args.len() {
+            state_dir = PathBuf::from(&args[i + 1]);
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    if !state_dir.exists() {
+        println!("doctor: state directory does not exist at {}", state_dir.display());
+        return Ok(());
+    }
+
+    let store = Store::new(state_dir.clone());
+    let mut issues = 0;
+
+    let pins_dir = store.pins_dir();
+    if pins_dir.exists() {
+        for entry in fs::read_dir(&pins_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+                let content = fs::read_to_string(&path)?;
+                if let Ok(pins) = toml::from_str::<Pins>(&content) {
+                    let proj = pins.project.unwrap_or_else(|| path.display().to_string());
+                    if !pins.unsupported.is_empty() {
+                        println!("project '{}' has {} unsupported sources:", proj, pins.unsupported.len());
+                        for u in &pins.unsupported {
+                            println!("  [unsupported] {}", u);
+                            issues += 1;
+                        }
+                    }
+                    for reg in &pins.registry {
+                        let blob = store.blobs_dir().join(format!("{}.crate", reg.checksum));
+                        if !blob.exists() {
+                            println!("  [missing blob] {} {} ({})", reg.name, reg.version, reg.checksum);
+                            issues += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if issues == 0 {
+        println!("doctor: system healthy, no missing artifacts or unsupported sources detected");
+    } else {
+        println!("doctor: detected {} issues", issues);
+    }
+
+    Ok(())
 }

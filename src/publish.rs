@@ -5,7 +5,7 @@ use crate::store::Store;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
