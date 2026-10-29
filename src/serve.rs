@@ -274,6 +274,7 @@ pub fn handle_publish_request<R: Read>(
 }
 
 pub fn handle_connection(stream: TcpStream, cfg: &ServeConfig) -> Result<()> {
+    let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
 
