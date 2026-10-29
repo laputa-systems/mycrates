@@ -1,1 +1,2 @@
-//! wire (reserved)
+#[derive(Debug)]
+pub struct PublishRequest {}
