@@ -1,16 +1,174 @@
-use mycrates::model::{CrateName, Version};
-use mycrates::store::Store;
-use tempfile::tempdir;
+use mycrates::error::Error;
+use mycrates::model::{IndexEntry, Version};
+use mycrates::store::{NativeRecord, Store};
+use std::collections::BTreeMap;
+use std::fs;
 use std::io::Cursor;
+use tempfile::tempdir;
+
+fn sample_entry(name: &str, vers: &str, cksum: &str) -> IndexEntry {
+    IndexEntry {
+        name: name.to_string(),
+        vers: vers.to_string(),
+        deps: vec![],
+        cksum: cksum.to_string(),
+        features: BTreeMap::new(),
+        yanked: false,
+        links: None,
+        rust_version: None,
+        v: Some(1),
+        extra: BTreeMap::new(),
+    }
+}
 
 #[test]
-fn ingest_same_bytes() {
-    let td = tempdir().unwrap();
-    let st = Store::new(td.path().to_path_buf());
-    let name = CrateName::new("foo").unwrap();
-    let ver = Version::new("1.0.0").unwrap();
-    let data = b"hello";
-    let c1 = st.ingest_blob(&data[..], &name, &ver).unwrap();
-    let c2 = st.ingest_blob(&data[..], &name, &ver).unwrap();
-    assert_eq!(c1, c2);
+fn ingest_same_bytes_and_conflict() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().to_path_buf());
+
+    let data1 = b"crate-archive-bytes-version-1";
+    let sha1 = store.ingest_blob(Cursor::new(data1)).unwrap();
+    assert_eq!(sha1, "9701dd578758d425fc4a09b80c796117e5bbeb3ce77e9e2c98be555006263453");
+
+    let rec1 = NativeRecord {
+        name: "my-pkg".to_string(),
+        vers: "1.0.0".to_string(),
+        checksum: sha1.clone(),
+        yanked: false,
+        entry: sample_entry("my-pkg", "1.0.0", &sha1),
+    };
+    let written = store.put_native_record(&rec1).unwrap();
+    assert!(written);
+
+    // Ingest same bytes again is a no-op
+    let sha1_again = store.ingest_blob(Cursor::new(data1)).unwrap();
+    assert_eq!(sha1_again, sha1);
+    let written_again = store.put_native_record(&rec1).unwrap();
+    assert!(!written_again);
+
+    // Ingest different bytes for same crate and version is a conflict
+    let data2 = b"different-bytes-for-same-version";
+    let sha2 = store.ingest_blob(Cursor::new(data2)).unwrap();
+    let rec2 = NativeRecord {
+        name: "my-pkg".to_string(),
+        vers: "1.0.0".to_string(),
+        checksum: sha2,
+        yanked: false,
+        entry: sample_entry("my-pkg", "1.0.0", "sha2"),
+    };
+    let err = store.put_native_record(&rec2).unwrap_err();
+    match err {
+        Error::Conflict(_) => {}
+        other => panic!("expected Conflict error, got {other:?}"),
+    }
+
+    // Existing record was not overwritten
+    let records = store.load_native_records().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].checksum, sha1);
+}
+
+#[test]
+fn name_collision_detection() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().to_path_buf());
+
+    let data = b"some-crate-data";
+    let sha = store.ingest_blob(Cursor::new(data)).unwrap();
+
+    let rec1 = NativeRecord {
+        name: "foo_bar".to_string(),
+        vers: "1.0.0".to_string(),
+        checksum: sha.clone(),
+        yanked: false,
+        entry: sample_entry("foo_bar", "1.0.0", &sha),
+    };
+    store.put_native_record(&rec1).unwrap();
+
+    // Trying to publish "foo-bar" when "foo_bar" exists must fail with Conflict
+    let rec2 = NativeRecord {
+        name: "foo-bar".to_string(),
+        vers: "1.0.0".to_string(),
+        checksum: sha.clone(),
+        yanked: false,
+        entry: sample_entry("foo-bar", "1.0.0", &sha),
+    };
+    let err = store.put_native_record(&rec2).unwrap_err();
+    match err {
+        Error::Conflict(msg) => {
+            assert!(msg.contains("collision"));
+        }
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+}
+
+#[test]
+fn build_metadata_rejection() {
+    // Version::new already rejects build metadata per Decisions
+    assert!(Version::new("1.0.0+build1").is_err());
+    assert!(Version::new("1.0.0").is_ok());
+}
+
+#[test]
+fn verify_detects_corrupted_blob() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().to_path_buf());
+
+    let data = b"valid-blob-contents";
+    let sha = store.ingest_blob(Cursor::new(data)).unwrap();
+    let rec = NativeRecord {
+        name: "test-pkg".to_string(),
+        vers: "0.1.0".to_string(),
+        checksum: sha.clone(),
+        yanked: false,
+        entry: sample_entry("test-pkg", "0.1.0", &sha),
+    };
+    store.put_native_record(&rec).unwrap();
+
+    // Verification succeeds initially
+    store.verify().unwrap();
+
+    // Corrupt the blob on disk
+    let blob_path = store.blobs_dir().join(format!("{}.crate", sha));
+    fs::write(&blob_path, b"tampered-contents").unwrap();
+
+    // Verify must now fail naming the file
+    let err = store.verify().unwrap_err();
+    match err {
+        Error::Integrity(msg) => {
+            assert!(msg.contains("corrupted blob"));
+            assert!(msg.contains(&sha));
+        }
+        other => panic!("expected Integrity error, got {other:?}"),
+    }
+}
+
+#[test]
+fn store_exclusive_locking() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().to_path_buf());
+
+    let guard1 = store.lock_exclusive().unwrap();
+    // Second try_lock should fail while guard1 is held
+    let try2 = store.try_lock_exclusive();
+    assert!(try2.is_err());
+
+    drop(guard1);
+    // After dropping guard1, try_lock should succeed
+    let guard3 = store.try_lock_exclusive().unwrap();
+    drop(guard3);
+}
+
+#[test]
+fn stale_temp_cleanup() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().to_path_buf());
+    store.ensure_dirs().unwrap();
+
+    let tmp_file = store.blobs_dir().join(".tmp.stale.crate");
+    fs::write(&tmp_file, b"stale data").unwrap();
+    assert!(tmp_file.exists());
+
+    store.recover_staging().unwrap();
+    assert!(!tmp_file.exists());
 }

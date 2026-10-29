@@ -1,4 +1,4 @@
-#![allow(unsafe_code)]
+#![forbid(unsafe_code)]
 
 #[path = "cli.rs"]
 pub mod cli;
