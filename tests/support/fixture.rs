@@ -58,6 +58,11 @@ impl TestServer {
             limits: LimitsConfig::default(),
         };
 
+        // Render initial generation so config.json is available
+        let store = mycrates::store::Store::new(state_dir);
+        let publ = mycrates::publish::Publisher::new(&store, site_dir, base_url);
+        let _ = publ.publish();
+
         let prefix_copy = prefix_clean.clone();
         let handle = thread::spawn(move || {
             let _ = listener.set_nonblocking(true);
