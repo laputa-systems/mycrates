@@ -1,56 +1,342 @@
+use crate::config::LimitsConfig;
+use crate::crate_file::{scan_crate, ScanLimits};
 use crate::error::{Error, Result};
-use std::io::{Read, Write};
+use crate::index::publish_to_index;
+use crate::publish::Publisher;
+use crate::store::{NativeRecord, Store};
+use crate::wire::decode_publish_payload;
+use sha2::{Digest, Sha256};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct ServeConfig {
     pub bind: String,
     pub token: Option<String>,
     pub auth_required: bool,
+    pub state_dir: PathBuf,
+    pub site_dir: PathBuf,
+    pub public_base_url: String,
+    pub limits: LimitsConfig,
 }
 
-pub fn handle_connection(mut stream: TcpStream, cfg: &ServeConfig) -> Result<()> {
-    let mut buf = [0u8; 4096];
-    let n = stream.read(&mut buf).map_err(|e| Error::Operation(e.to_string()))?;
-    if n == 0 {
-        return Ok(());
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
     }
-    // very basic parse
-    let req = String::from_utf8_lossy(&buf[..n]);
-    if req.starts_with("PUT /api/v1/crates/new") {
-        // check auth
-        if cfg.auth_required {
-            if let Some(ref token) = cfg.token {
-                // look for auth header
-                let has_auth = req.contains(&format!("Bearer {}", token)) || req.contains("Authorization");
-                // compare digest in constant time conceptually - just check presence for scaffold
-                if !req.to_lowercase().contains("authorization") {
-                    let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\n\r\n{\"errors\":[{\"detail\":\"unauthorized\"}]}\r\n";
-                    let _ = stream.write_all(resp.as_bytes());
-                    return Ok(());
-                }
-            } else {
-                let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\n\r\n{\"errors\":[{\"detail\":\"unauthorized\"}]}\r\n";
-                let _ = stream.write_all(resp.as_bytes());
+    let mut diff = 0u8;
+    for (&x, &y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+fn verify_token(provided_header: Option<&str>, expected_token: &str) -> bool {
+    let header = match provided_header {
+        Some(h) => h.trim(),
+        None => return false,
+    };
+    let provided_token = if let Some(stripped) = header.strip_prefix("Bearer ") {
+        stripped.trim()
+    } else {
+        header
+    };
+
+    let mut h1 = Sha256::new();
+    h1.update(provided_token.as_bytes());
+    let d1 = h1.finalize();
+
+    let mut h2 = Sha256::new();
+    h2.update(expected_token.as_bytes());
+    let d2 = h2.finalize();
+
+    constant_time_eq(&d1, &d2)
+}
+
+fn send_json_response(mut stream: &TcpStream, status: u16, reason: &str, body_json: &str) {
+    let resp = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
+        reason,
+        body_json.len(),
+        body_json
+    );
+    let _ = stream.write_all(resp.as_bytes());
+    let _ = stream.flush();
+}
+
+fn send_error(stream: &TcpStream, status: u16, detail: &str) {
+    let body = serde_json::json!({
+        "errors": [{ "detail": detail }]
+    })
+    .to_string();
+    let reason = match status {
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        409 => "Conflict",
+        411 => "Length Required",
+        413 => "Payload Too Large",
+        _ => "Internal Server Error",
+    };
+    send_json_response(stream, status, reason, &body);
+}
+
+pub fn handle_publish_request<R: Read>(
+    stream: &TcpStream,
+    method: &str,
+    path: &str,
+    headers: &[(String, String)],
+    reader: &mut R,
+    cfg: &ServeConfig,
+) -> Result<()> {
+    // Check authentication
+    if cfg.auth_required || cfg.token.is_some() {
+        if let Some(ref exp_token) = cfg.token {
+            let auth_hdr = headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+                .map(|(_, v)| v.as_str());
+            if !verify_token(auth_hdr, exp_token) {
+                send_error(stream, 401, "unauthorized");
+                return Ok(());
+            }
+        } else if cfg.auth_required {
+            send_error(stream, 401, "unauthorized");
+            return Ok(());
+        }
+    }
+
+    let store = Store::new(cfg.state_dir.clone());
+    let publisher = Publisher::new(&store, cfg.site_dir.clone(), cfg.public_base_url.clone());
+
+    if method == "PUT" && path == "/api/v1/crates/new" {
+        let is_chunked = headers.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("transfer-encoding") && v.eq_ignore_ascii_case("chunked")
+        });
+        if is_chunked {
+            send_error(stream, 411, "chunked transfer-encoding not supported");
+            return Ok(());
+        }
+
+        let content_length = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, v)| v.trim().parse::<u64>().ok());
+
+        let content_len = match content_length {
+            Some(l) => l,
+            None => {
+                send_error(stream, 411, "content-length required");
+                return Ok(());
+            }
+        };
+
+        if content_len > cfg.limits.max_compressed + 10 * 1024 * 1024 {
+            send_error(stream, 413, "payload exceeds size limit");
+            return Ok(());
+        }
+
+        let decoded = match decode_publish_payload(reader, content_len, cfg.limits.max_compressed) {
+            Ok(d) => d,
+            Err(Error::Limit(msg)) => {
+                send_error(stream, 413, &msg);
+                return Ok(());
+            }
+            Err(e) => {
+                send_error(stream, 400, &e.to_string());
+                return Ok(());
+            }
+        };
+
+        // Scan crate archive
+        let scan_limits = ScanLimits {
+            max_compressed: cfg.limits.max_compressed,
+            max_expanded: cfg.limits.max_expanded,
+            max_entries: cfg.limits.max_entries,
+            max_ratio: cfg.limits.max_ratio,
+        };
+
+        let scan_res = match scan_crate(
+            &decoded.crate_bytes[..],
+            &decoded.body.name,
+            &decoded.body.vers,
+            &scan_limits,
+        ) {
+            Ok(s) => s,
+            Err(Error::Limit(msg)) => {
+                send_error(stream, 413, &msg);
+                return Ok(());
+            }
+            Err(e) => {
+                send_error(stream, 400, &e.to_string());
+                return Ok(());
+            }
+        };
+
+        // Acquire lock
+        let _guard = store.lock_exclusive()?;
+
+        // Ingest blob
+        let blob_sha = store.ingest_blob(&decoded.crate_bytes[..])?;
+        if blob_sha != scan_res.checksum {
+            send_error(stream, 400, "checksum mismatch");
+            return Ok(());
+        }
+
+        let mut body = decoded.body;
+        body.checksum = blob_sha.clone();
+
+        let index_entry = match publish_to_index(&body) {
+            Ok(entry) => entry,
+            Err(e) => {
+                send_error(stream, 400, &e.to_string());
+                return Ok(());
+            }
+        };
+
+        let record = NativeRecord {
+            name: body.name.clone(),
+            vers: body.vers.clone(),
+            checksum: blob_sha,
+            yanked: body.yanked,
+            entry: index_entry,
+        };
+
+        match store.put_native_record(&record) {
+            Ok(_) => {}
+            Err(Error::Conflict(msg)) => {
+                send_error(stream, 409, &msg);
+                return Ok(());
+            }
+            Err(e) => {
+                send_error(stream, 400, &e.to_string());
                 return Ok(());
             }
         }
-        let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}\r\n";
-        let _ = stream.write_all(resp.as_bytes());
+
+        // Generate updated site
+        if let Err(e) = publisher.publish() {
+            send_error(stream, 500, &e.to_string());
+            return Ok(());
+        }
+
+        let resp_json = serde_json::json!({
+            "warnings": {
+                "invalid_categories": [],
+                "invalid_badges": [],
+                "other": []
+            }
+        })
+        .to_string();
+        send_json_response(stream, 200, "OK", &resp_json);
         return Ok(());
     }
-    if req.starts_with("DELETE") && req.contains("/yank") {
-        let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}\r\n";
-        let _ = stream.write_all(resp.as_bytes());
+
+    if (method == "DELETE" && path.ends_with("/yank"))
+        || (method == "PUT" && path.ends_with("/unyank"))
+    {
+        let is_yank = method == "DELETE";
+        // path: /api/v1/crates/{name}/{version}/{yank|unyank}
+        let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        if parts.len() == 6 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "crates" {
+            let crate_name = parts[3];
+            let crate_version = parts[4];
+
+            let _guard = store.lock_exclusive()?;
+            match store.set_native_yank(crate_name, crate_version, is_yank) {
+                Ok(_) => {
+                    let _ = publisher.publish();
+                    send_json_response(stream, 200, "OK", "{\"ok\":true}");
+                    return Ok(());
+                }
+                Err(Error::Input(msg)) => {
+                    send_error(stream, 404, &msg);
+                    return Ok(());
+                }
+                Err(e) => {
+                    send_error(stream, 400, &e.to_string());
+                    return Ok(());
+                }
+            }
+        }
+        send_error(stream, 404, "invalid route");
         return Ok(());
     }
-    if req.starts_with("PUT") && req.contains("/unyank") {
-        let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}\r\n";
-        let _ = stream.write_all(resp.as_bytes());
-        return Ok(());
+
+    send_error(stream, 404, "not found");
+    Ok(())
+}
+
+pub fn handle_connection(stream: TcpStream, cfg: &ServeConfig) -> Result<()> {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
+
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut header_bytes = Vec::new();
+
+    loop {
+        let mut line = Vec::new();
+        let n = reader.read_until(b'\n', &mut line)?;
+        if n == 0 {
+            return Ok(());
+        }
+        header_bytes.extend_from_slice(&line);
+        if header_bytes.ends_with(b"\r\n\r\n") || header_bytes.ends_with(b"\n\n") {
+            break;
+        }
+        if header_bytes.len() > 65536 {
+            send_error(&stream, 400, "headers too large");
+            return Ok(());
+        }
     }
-    let resp = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\nnot found\r\n";
-    let _ = stream.write_all(resp.as_bytes());
+
+    let mut headers_buf = [httparse::EMPTY_HEADER; 64];
+    let mut req = httparse::Request::new(&mut headers_buf);
+    match req.parse(&header_bytes) {
+        Ok(httparse::Status::Complete(_)) => {}
+        _ => {
+            send_error(&stream, 400, "malformed request headers");
+            return Ok(());
+        }
+    }
+
+    let method = req.method.unwrap_or_default().to_string();
+    let path = req.path.unwrap_or_default().to_string();
+    let mut headers = Vec::new();
+    for h in req.headers {
+        if !h.name.is_empty() {
+            let val = String::from_utf8_lossy(h.value).to_string();
+            headers.push((h.name.to_string(), val));
+        }
+    }
+
+    handle_publish_request(&stream, &method, &path, &headers, &mut reader, cfg)
+}
+
+pub fn run_server(cfg: ServeConfig, stop: Arc<AtomicBool>) -> Result<()> {
+    let listener = TcpListener::bind(&cfg.bind)?;
+    listener.set_nonblocking(true)?;
+
+    while !stop.load(Ordering::Relaxed) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                let cfg_clone = cfg.clone();
+                std::thread::spawn(move || {
+                    let _ = handle_connection(stream, &cfg_clone);
+                });
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(Error::Operation(e.to_string())),
+        }
+    }
+
     Ok(())
 }
