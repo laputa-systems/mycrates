@@ -172,3 +172,30 @@ fn stale_temp_cleanup() {
     store.recover_staging().unwrap();
     assert!(!tmp_file.exists());
 }
+
+#[test]
+fn prerelease_version_distinct_from_release() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().to_path_buf());
+
+    let rec_pre = NativeRecord {
+        name: "my-pkg".to_string(),
+        vers: "1.0.0-alpha.1".to_string(),
+        checksum: "sha_pre".to_string(),
+        yanked: false,
+        entry: sample_entry("my-pkg", "1.0.0-alpha.1", "sha_pre"),
+    };
+    let rec_rel = NativeRecord {
+        name: "my-pkg".to_string(),
+        vers: "1.0.0".to_string(),
+        checksum: "sha_rel".to_string(),
+        yanked: false,
+        entry: sample_entry("my-pkg", "1.0.0", "sha_rel"),
+    };
+
+    assert!(store.put_native_record(&rec_pre).unwrap());
+    assert!(store.put_native_record(&rec_rel).unwrap());
+
+    let records = store.load_native_records().unwrap();
+    assert_eq!(records.len(), 2);
+}

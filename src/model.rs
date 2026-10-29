@@ -62,15 +62,11 @@ impl Version {
     }
 
     pub fn key(&self) -> String {
-        format!("{}.{}.{}", self.0.major, self.0.minor, self.0.patch)
-    }
-
-    pub fn full(&self) -> String {
-        format!("{}{}{}", self.key(), if self.0.pre.is_empty() { String::new() } else { format!("-{}", self.0.pre) }, "")
+        self.0.to_string()
     }
 
     pub fn as_str(&self) -> String {
-        self.full()
+        self.0.to_string()
     }
 }
 

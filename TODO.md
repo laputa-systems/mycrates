@@ -1,15 +1,6 @@
 Prefix: MYC
 Next: 6
 
-### MYC-1 · P1 · Version key drops semver prerelease causing record collision
-
-- **Area:** Data
-- **Where:** `src/model.rs:64`, `src/store.rs:190`
-- **Problem:** `Version::key()` returns `{major}.{minor}.{patch}`, dropping prerelease identifiers (`self.0.pre`). Distinct semver versions such as `1.0.0-alpha.1` and `1.0.0` map to the same file (`1.0.0.toml` or `1.0.0.json`), causing premature conflict rejections or validation failures.
-- **Recommendation:** Return `self.0.to_string()` for `Version::key()` because `Version::new()` already validates and rejects build metadata.
-- **Fix with:** make-invalid-states-unrepresentable
-- **Effort:** S
-
 ### MYC-2 · P2 · HTTP connection handling inherits nonblocking socket on BSD/macOS
 
 - **Area:** Concurrency
