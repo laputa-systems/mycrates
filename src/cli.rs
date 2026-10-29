@@ -71,11 +71,9 @@ pub fn parse_args() -> Result<Args> {
             }
             Value(v) => {
                 let s = v.to_string_lossy();
-                if cmd.is_none() {
-                    if let Some(c) = parse_command(&s) {
-                        cmd = Some(c);
-                        continue;
-                    }
+                if cmd.is_none() && let Some(c) = parse_command(&s) {
+                    cmd = Some(c);
+                    continue;
                 }
                 rest.push(s.into_owned());
             }

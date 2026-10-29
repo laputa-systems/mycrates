@@ -1,7 +1,7 @@
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use mycrates::acquire::{fetch, plan, verify};
-use mycrates::config::{Config, LimitsConfig, UpstreamConfig};
+use mycrates::config::{Config, UpstreamConfig};
 use mycrates::error::Error;
 use mycrates::pins::{write_pins, PinEntry, Pins};
 use mycrates::store::Store;
@@ -177,11 +177,12 @@ fn fetch_trust_chain_and_idempotence() {
     assert_eq!(plan_items.len(), 1);
     assert_eq!(plan_items[0].name, "mock-pkg");
 
-    let mut cfg = Config::default();
-    cfg.upstream = UpstreamConfig {
-        index_url: format!("http://127.0.0.1:{}", upstream.port),
+    let cfg = Config {
+        upstream: UpstreamConfig {
+            index_url: format!("http://127.0.0.1:{}", upstream.port),
+        },
+        ..Default::default()
     };
-    cfg.limits = LimitsConfig::default();
 
     let summary = fetch(&state_dir, &cfg).unwrap();
     assert_eq!(summary.fetched_count, 1);

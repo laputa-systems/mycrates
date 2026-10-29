@@ -116,11 +116,8 @@ impl<'a> Publisher<'a> {
         }
 
         let dst_blob = self.blobs_dir().join(format!("{}.crate", sha256));
-        if !dst_blob.exists() {
-            if let Err(_) = fs::hard_link(&src_blob, &dst_blob) {
-                // If hard link fails (e.g. EXDEV across devices), fall back to copy
-                fs::copy(&src_blob, &dst_blob)?;
-            }
+        if !dst_blob.exists() && fs::hard_link(&src_blob, &dst_blob).is_err() {
+            fs::copy(&src_blob, &dst_blob)?;
         }
         Ok(())
     }
@@ -264,18 +261,16 @@ impl<'a> Publisher<'a> {
 
         let target_gen_dir = self.generations_dir().join(&gen_id);
 
-        // 9. Check if current symlink already points to this generation
-        if self.current_link().is_symlink() {
-            if let Ok(link_target) = fs::read_link(self.current_link()) {
-                let expected_rel = Path::new("generations").join(&gen_id);
-                if link_target == expected_rel {
-                    // No-op detected
-                    let _ = fs::remove_dir_all(&staging_dir);
-                    return Ok(PublishResult {
-                        generation_id: gen_id,
-                        is_noop: true,
-                    });
-                }
+        if self.current_link().is_symlink()
+            && let Ok(link_target) = fs::read_link(self.current_link())
+        {
+            let expected_rel = Path::new("generations").join(&gen_id);
+            if link_target == expected_rel {
+                let _ = fs::remove_dir_all(&staging_dir);
+                return Ok(PublishResult {
+                    generation_id: gen_id,
+                    is_noop: true,
+                });
             }
         }
 

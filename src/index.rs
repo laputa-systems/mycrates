@@ -78,7 +78,7 @@ pub fn publish_to_index(body: &PublishBody) -> Result<IndexEntry> {
     }
 
     let mut has_v2 = false;
-    for (_k, v) in &body.features {
+    for v in body.features.values() {
         for val in v {
             if val.contains("dep:") || val.contains('?') {
                 has_v2 = true;

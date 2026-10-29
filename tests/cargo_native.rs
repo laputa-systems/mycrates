@@ -98,9 +98,8 @@ fn publish_and_consume() {
     // 2. Author consumer project
     let consumer_dir = dir.path().join("consumer");
     fs::create_dir_all(consumer_dir.join("src")).unwrap();
-    let consumer_toml = format!(
-        "[package]\nname = \"consumer\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nalpha = {{ version = \"0.1.0\", registry = \"mycrates\" }}\n"
-    );
+    let consumer_toml =
+        "[package]\nname = \"consumer\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nalpha = { version = \"0.1.0\", registry = \"mycrates\" }\n";
     fs::write(consumer_dir.join("Cargo.toml"), consumer_toml).unwrap();
     fs::write(
         consumer_dir.join("src/main.rs"),

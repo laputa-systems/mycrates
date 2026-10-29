@@ -51,10 +51,8 @@ pub fn run(args: &[String]) -> Result<()> {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("toml") {
             let stem = path.file_stem().unwrap().to_string_lossy().to_string();
-            if let Some(ref p) = project {
-                if p != &stem {
-                    continue;
-                }
+            if project.as_ref().is_some_and(|p| p != &stem) {
+                continue;
             }
             let res = validate_project(&state_dir, &path, &effective_mirror_url)?;
             println!(
@@ -65,10 +63,8 @@ pub fn run(args: &[String]) -> Result<()> {
         }
     }
 
-    if validated == 0 {
-        if let Some(ref p) = project {
-            return Err(Error::Input(format!("project '{}' not found in pins", p)));
-        }
+    if validated == 0 && let Some(ref p) = project {
+        return Err(Error::Input(format!("project '{}' not found in pins", p)));
     }
 
     Ok(())

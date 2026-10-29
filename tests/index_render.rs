@@ -133,10 +133,10 @@ fn upstream_unknown_field_preserved() {
     let mut val: serde_json::Value = serde_json::from_str(line).unwrap();
     // roundtrip preserving extra
     let mut extra = BTreeMap::new();
-    if let serde_json::Value::Object(ref mut map) = val {
-        if let Some(p) = map.remove("pubtime") {
-            extra.insert("pubtime".to_string(), p);
-        }
+    if let serde_json::Value::Object(ref mut map) = val
+        && let Some(p) = map.remove("pubtime")
+    {
+        extra.insert("pubtime".to_string(), p);
     }
     let obj = val.as_object().unwrap();
     let mut out = serde_json::Map::new();

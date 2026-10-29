@@ -1,7 +1,6 @@
 use mycrates::crate_file::{scan_crate, ScanLimits};
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use std::io::Write;
 use tar::Builder;
 
 fn make_crate(name: &str, ver: &str) -> Vec<u8> {
@@ -15,7 +14,7 @@ fn make_crate(name: &str, ver: &str) -> Vec<u8> {
     header.set_mode(0o644);
     header.set_cksum();
     tar.append(&header, cargo_toml.as_bytes()).unwrap();
-    let tar_data = tar.into_inner().unwrap();
+    let _ = tar.into_inner().unwrap();
     encoder.finish().unwrap()
 }
 
@@ -37,7 +36,7 @@ fn bad_prefix() {
     header.set_mode(0o644);
     header.set_cksum();
     tar.append(&header, cargo_toml.as_bytes()).unwrap();
-    let tar_data = tar.into_inner().unwrap();
+    let _ = tar.into_inner().unwrap();
     let data = encoder.finish().unwrap();
     let err = scan_crate(&data[..], "foo", "1.0.0", &ScanLimits::default()).unwrap_err();
     let s = format!("{err}");

@@ -121,14 +121,15 @@ impl Store {
             let entry = entry?;
             if entry.file_type()?.is_dir() {
                 let existing_dir_name = entry.file_name().to_string_lossy().to_string();
-                if let Ok(existing_crate) = CrateName::new(&existing_dir_name) {
-                    if existing_crate.norm_key() == norm && existing_crate.as_str() != name.as_str() {
-                        return Err(Error::Conflict(format!(
-                            "crate name collision: '{}' conflicts with existing '{}'",
-                            name.as_str(),
-                            existing_crate.as_str()
-                        )));
-                    }
+                if let Ok(existing_crate) = CrateName::new(&existing_dir_name)
+                    && existing_crate.norm_key() == norm
+                    && existing_crate.as_str() != name.as_str()
+                {
+                    return Err(Error::Conflict(format!(
+                        "crate name collision: '{}' conflicts with existing '{}'",
+                        name.as_str(),
+                        existing_crate.as_str()
+                    )));
                 }
             }
         }

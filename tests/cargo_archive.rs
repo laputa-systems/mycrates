@@ -13,7 +13,6 @@ use mycrates::publish::Publisher;
 use mycrates::store::{Store, UpstreamRecord};
 use mycrates::validate::validate_project;
 use sha2::{Digest, Sha256};
-use std::fs;
 use tar::Builder;
 use tempfile::tempdir;
 

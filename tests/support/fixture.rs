@@ -1,8 +1,8 @@
 use mycrates::config::LimitsConfig;
 use mycrates::serve::{handle_publish_request, ServeConfig};
 use sha2::{Digest, Sha256};
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+#[allow(dead_code)]
 pub struct TestServer {
     pub port: u16,
     pub prefix: String,
@@ -28,6 +29,7 @@ impl Drop for TestServer {
     }
 }
 
+#[allow(dead_code)]
 impl TestServer {
     pub fn start(
         state_dir: PathBuf,
@@ -110,6 +112,7 @@ impl TestServer {
 }
 
 fn handle_test_connection(stream: TcpStream, cfg: &ServeConfig, prefix: &str) -> std::io::Result<()> {
+    let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
 
@@ -181,13 +184,8 @@ fn serve_static_file(
 ) {
     let clean_path = path.trim_start_matches('/');
 
-    // Handle blobs: blobs/<sha256>.crate
-    let target_file = if clean_path.starts_with("blobs/") {
+    let target_file = if clean_path.starts_with("blobs/") || clean_path.starts_with("current/") {
         site_dir.join(clean_path)
-    } else if clean_path.starts_with("current/") {
-        site_dir.join(clean_path)
-    } else if clean_path.starts_with("registry/") || clean_path.starts_with("crates-io/") {
-        site_dir.join("current").join(clean_path)
     } else {
         site_dir.join("current").join(clean_path)
     };
@@ -209,16 +207,15 @@ fn serve_static_file(
     h.update(&file_bytes);
     let etag = format!("\"{:x}\"", h.finalize());
 
-    // Check If-None-Match
-    if let Some((_, client_etag)) = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("if-none-match")) {
-        if client_etag.trim() == etag {
-            let resp = format!(
-                "HTTP/1.1 304 Not Modified\r\nETag: {}\r\nConnection: close\r\n\r\n",
-                etag
-            );
-            let _ = stream.write_all(resp.as_bytes());
-            return;
-        }
+    if let Some((_, client_etag)) = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("if-none-match"))
+        && client_etag.trim() == etag
+    {
+        let resp = format!(
+            "HTTP/1.1 304 Not Modified\r\nETag: {}\r\nConnection: close\r\n\r\n",
+            etag
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        return;
     }
 
     let mime = if target_file.extension().and_then(|s| s.to_str()) == Some("crate") {

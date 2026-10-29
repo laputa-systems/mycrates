@@ -109,10 +109,11 @@ impl UpstreamClient {
             if line_trimmed.is_empty() {
                 continue;
             }
-            if let Ok(entry) = serde_json::from_str::<IndexEntry>(line_trimmed) {
-                if entry.name == name && entry.vers == vers {
-                    return Ok((line_trimmed.to_string(), entry));
-                }
+            if let Ok(entry) = serde_json::from_str::<IndexEntry>(line_trimmed)
+                && entry.name == name
+                && entry.vers == vers
+            {
+                return Ok((line_trimmed.to_string(), entry));
             }
         }
 
