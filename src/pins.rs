@@ -1,6 +1,5 @@
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -12,8 +11,14 @@ pub struct PinEntry {
     pub source: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Pins {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_content: Option<String>,
     #[serde(default)]
     pub registry: Vec<PinEntry>,
     #[serde(default)]
