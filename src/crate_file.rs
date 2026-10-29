@@ -31,8 +31,10 @@ pub struct ScanResult {
 
 pub fn scan_crate<R: Read>(mut reader: R, name: &str, version: &str, limits: &ScanLimits) -> Result<ScanResult> {
     let mut tmp = Vec::new();
-    std::io::copy(&mut reader, &mut tmp).map_err(|e| Error::Operation(e.to_string()))?;
-    if tmp.len() as u64 > limits.max_compressed {
+    let max_read = limits.max_compressed.saturating_add(1);
+    let bytes_copied = std::io::copy(&mut reader.by_ref().take(max_read), &mut tmp)
+        .map_err(|e| Error::Operation(e.to_string()))?;
+    if bytes_copied > limits.max_compressed || tmp.len() as u64 > limits.max_compressed {
         return Err(Error::Limit("compressed size exceeded".to_string()));
     }
     let mut hasher = Sha256::new();

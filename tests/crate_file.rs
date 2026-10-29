@@ -42,3 +42,15 @@ fn bad_prefix() {
     let s = format!("{err}");
     assert!(s.contains("integrity"));
 }
+
+#[test]
+fn bounded_reader_prevents_unbounded_allocation() {
+    let limits = ScanLimits {
+        max_compressed: 50,
+        ..ScanLimits::default()
+    };
+    let infinite_zeros = std::io::repeat(0);
+    let err = scan_crate(infinite_zeros, "foo", "1.0.0", &limits).unwrap_err();
+    let s = format!("{err}");
+    assert!(s.contains("compressed size exceeded"));
+}

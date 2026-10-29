@@ -1,15 +1,6 @@
 Prefix: MYC
 Next: 6
 
-### MYC-3 · P2 · scan_crate buffers unbounded compressed input stream into memory
-
-- **Area:** Security
-- **Where:** `src/crate_file.rs:34`
-- **Problem:** `scan_crate` uses `std::io::copy(&mut reader, &mut tmp)` into an unbounded vector before checking length against `limits.max_compressed`. An attacker or client streaming excessive data can cause memory exhaustion before limit enforcement triggers.
-- **Recommendation:** Bound stream ingestion with `reader.take(limits.max_compressed + 1)` and reject if copied bytes exceed `max_compressed`.
-- **Fix with:** os-boundaries
-- **Effort:** S
-
 ### MYC-4 · P3 · Publish HTTP daemon does not throttle concurrent connections
 
 - **Area:** Concurrency
