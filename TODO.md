@@ -1,15 +1,6 @@
 Prefix: MYC
 Next: 6
 
-### MYC-4 · P3 · Publish HTTP daemon does not throttle concurrent connections
-
-- **Area:** Concurrency
-- **Where:** `src/serve.rs:330`
-- **Problem:** `run_server` spawns an unbounded thread per accepted TCP connection, allowing connection spikes to exhaust system thread limits rather than capping active handlers at `limits.concurrent_requests`.
-- **Recommendation:** Bound active connection worker threads with an atomic counter or semaphore, rejecting or queuing connections when saturated.
-- **Fix with:** lifecycle-concurrency
-- **Effort:** M
-
 ### MYC-5 · P4 · Stale milestone and numbered implementation comments in production source
 
 - **Area:** Dead code

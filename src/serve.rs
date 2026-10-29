@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -82,6 +82,7 @@ fn send_error(stream: &TcpStream, status: u16, detail: &str) {
         409 => "Conflict",
         411 => "Length Required",
         413 => "Payload Too Large",
+        503 => "Service Unavailable",
         _ => "Internal Server Error",
     };
     send_json_response(stream, status, reason, &body);
@@ -320,15 +321,31 @@ pub fn handle_connection(stream: TcpStream, cfg: &ServeConfig) -> Result<()> {
     handle_publish_request(&stream, &method, &path, &headers, &mut reader, cfg)
 }
 
+struct ActiveGuard(Arc<AtomicUsize>);
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 pub fn run_server(cfg: ServeConfig, stop: Arc<AtomicBool>) -> Result<()> {
     let listener = TcpListener::bind(&cfg.bind)?;
     listener.set_nonblocking(true)?;
+    let active = Arc::new(AtomicUsize::new(0));
 
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, _)) => {
+                if active.load(Ordering::SeqCst) >= cfg.limits.concurrent_requests {
+                    send_error(&stream, 503, "too many concurrent requests");
+                    continue;
+                }
+                active.fetch_add(1, Ordering::SeqCst);
+                let guard = ActiveGuard(active.clone());
                 let cfg_clone = cfg.clone();
                 std::thread::spawn(move || {
+                    let _guard = guard;
                     let _ = handle_connection(stream, &cfg_clone);
                 });
             }
