@@ -7,7 +7,7 @@ use mycrates::config::{Config, UpstreamConfig};
 use mycrates::lockfile::{classify, parse_lockfile, PkgKind};
 use mycrates::pins::{write_pins, PinEntry, Pins};
 use mycrates::store::Store;
-use mycrates::validate::validate_project;
+use mycrates::validate::validate_archive;
 use tempfile::tempdir;
 
 #[test]
@@ -84,7 +84,8 @@ checksum = "d75a2a4b1b190afb6f5425f10f6a8f959d2ea0b9c2b1d79553551850539e4674"
     assert_eq!(summary.fetched_count, 1);
 
     let server = TestServer::start(state_dir.clone(), site_dir.clone(), "", None, false);
-    let val_res = validate_project(&state_dir, &pins_path, &server.mirror_index_url()).unwrap();
+    let _ = server.mirror_index_url();
+    let val_res = validate_archive(&state_dir, &pins_path).unwrap();
     assert_eq!(val_res.registry_count, 1);
     assert!(!val_res.is_partial);
 }

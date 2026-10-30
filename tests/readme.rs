@@ -231,6 +231,13 @@ dependencies = [
         cksum
     );
     fs::write(work_dir.path().join("Cargo.lock"), lock_content).unwrap();
+    fs::write(
+        work_dir.path().join("Cargo.toml"),
+        "[package]\nname = \"validation-probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nsample-pkg = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(work_dir.path().join("src")).unwrap();
+    fs::write(work_dir.path().join("src/lib.rs"), "").unwrap();
 
     let bin_dir = work_dir.path().join("bin");
     fs::create_dir_all(&bin_dir).unwrap();

@@ -187,7 +187,7 @@ cargo yank --undo --registry mycrates --version 0.1.0 my-private-crate
 Validate that all archived packages resolve and fetch under proxy denial:
 
 ```sh verified
-mycrates validate
+mycrates validate --project-dir .
 ```
 
 ## Web Server Deployment

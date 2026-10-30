@@ -129,7 +129,7 @@ pub fn print_help() {
     println!("  serve-publish [--bind ADDR] [--token-file PATH] [--state-dir DIR] [--site-dir DIR] [--config PATH]");
     println!("  verify [--state-dir DIR]");
     println!("  doctor [--state-dir DIR]");
-    println!("  validate [--state-dir DIR] [--project NAME] [--mirror-url URL] [--config PATH]");
+    println!("  validate [--state-dir DIR] [--project NAME] [--project-dir DIR] [--manifest-path PATH] [--mirror-url URL] [--config PATH]");
     println!();
     println!("Options:");
     println!("  -h, --help  Print help");

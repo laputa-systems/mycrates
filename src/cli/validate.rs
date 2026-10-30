@@ -7,11 +7,13 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-const USAGE: &str = "mycrates validate [--state-dir DIR] [--project NAME] [--mirror-url URL] [--config PATH]";
+const USAGE: &str = "mycrates validate [--state-dir DIR] [--project NAME] [--project-dir DIR] [--manifest-path PATH] [--mirror-url URL] [--config PATH]";
 
 pub fn run(args: &[String]) -> Result<()> {
     let mut state_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(".work/state");
     let mut project: Option<String> = None;
+    let mut project_dir: Option<PathBuf> = None;
+    let mut manifest_path: Option<PathBuf> = None;
     let mut mirror_url: Option<String> = None;
     let mut cfg_path: Option<PathBuf> = None;
 
@@ -24,6 +26,14 @@ pub fn run(args: &[String]) -> Result<()> {
             }
             "--project" => {
                 project = Some(take_value(args, &mut i, "--project")?);
+                i += 1;
+            }
+            "--project-dir" => {
+                project_dir = Some(PathBuf::from(take_value(args, &mut i, "--project-dir")?));
+                i += 1;
+            }
+            "--manifest-path" => {
+                manifest_path = Some(PathBuf::from(take_value(args, &mut i, "--manifest-path")?));
                 i += 1;
             }
             "--mirror-url" => {
@@ -39,6 +49,13 @@ pub fn run(args: &[String]) -> Result<()> {
             }
         }
     }
+
+    if project_dir.is_some() && manifest_path.is_some() {
+        return Err(Error::Input(
+            "validate: supply only one of --project-dir and --manifest-path".to_string(),
+        ));
+    }
+    let project_source: Option<PathBuf> = project_dir.or(manifest_path);
 
     let config_file = cfg_path.unwrap_or_else(|| state_dir.join("config.json"));
     let config = Config::load(&config_file).unwrap_or_default();
@@ -63,7 +80,12 @@ pub fn run(args: &[String]) -> Result<()> {
             if project.as_ref().is_some_and(|p| p != &stem) {
                 continue;
             }
-            let res = validate_project(&state_dir, &path, &effective_mirror_url)?;
+            let res = validate_project(
+                &state_dir,
+                &path,
+                &effective_mirror_url,
+                project_source.as_deref(),
+            )?;
             println!(
                 "project '{}': {} registry packages verified (partial: {})",
                 res.project, res.registry_count, res.is_partial
