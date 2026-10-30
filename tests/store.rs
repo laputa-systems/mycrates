@@ -200,10 +200,14 @@ fn stale_temp_cleanup() {
 
     let tmp_file = store.blobs_dir().join(".tmp.stale.crate");
     fs::write(&tmp_file, b"stale data").unwrap();
+    let upload_file = store.blobs_dir().join(".upload.123.456.789");
+    fs::write(&upload_file, b"partial upload").unwrap();
     assert!(tmp_file.exists());
+    assert!(upload_file.exists());
 
     store.recover_staging().unwrap();
     assert!(!tmp_file.exists());
+    assert!(!upload_file.exists());
 }
 
 #[test]
@@ -240,6 +244,58 @@ fn mixed_case_lookup_and_collision() {
 
     use mycrates::index::shard_for_name;
     assert_eq!(shard_for_name(&"Foo_Bar".to_lowercase()), shard_for_name("foo_bar"));
+}
+
+#[test]
+fn successive_mixed_case_releases_succeed() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().to_path_buf());
+    let sha1 = store.ingest_blob(std::io::Cursor::new(b"mixed-1")).unwrap();
+    let sha2 = store.ingest_blob(std::io::Cursor::new(b"mixed-2")).unwrap();
+    let rec1 = NativeRecord {
+        name: "MyCrate".to_string(),
+        vers: "1.0.0".to_string(),
+        checksum: sha1.clone(),
+        yanked: false,
+        entry: sample_entry("MyCrate", "1.0.0", &sha1),
+    };
+    assert!(store.put_native_record(&rec1).unwrap());
+    let rec2 = NativeRecord {
+        name: "MyCrate".to_string(),
+        vers: "1.1.0".to_string(),
+        checksum: sha2.clone(),
+        yanked: false,
+        entry: sample_entry("MyCrate", "1.1.0", &sha2),
+    };
+    assert!(store.put_native_record(&rec2).unwrap());
+    let recs = store.load_native_records().unwrap();
+    assert_eq!(recs.len(), 2);
+}
+
+#[test]
+fn overlapping_normalized_names_across_registries_allowed() {
+    use mycrates::store::UpstreamRecord;
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().to_path_buf());
+    let sha = store.ingest_blob(std::io::Cursor::new(b"cross")).unwrap();
+    let native = NativeRecord {
+        name: "foo_bar".to_string(),
+        vers: "1.0.0".to_string(),
+        checksum: sha.clone(),
+        yanked: false,
+        entry: sample_entry("foo_bar", "1.0.0", &sha),
+    };
+    store.put_native_record(&native).unwrap();
+    let upstream = UpstreamRecord {
+        name: "foo-bar".to_string(),
+        vers: "1.0.0".to_string(),
+        checksum: sha.clone(),
+        raw_index_line: serde_json::json!({"name":"foo-bar","vers":"1.0.0","deps":[],"cksum":sha,"features":{},"yanked":false}).to_string(),
+        acquired_at: 1,
+    };
+    assert!(store.put_upstream_record(&upstream).unwrap());
+    assert_eq!(store.load_native_records().unwrap().len(), 1);
+    assert_eq!(store.load_upstream_records().unwrap().len(), 1);
 }
 
 #[test]

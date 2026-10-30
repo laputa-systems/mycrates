@@ -105,7 +105,10 @@ impl Store {
                 let entry = entry?;
                 let file_name = entry.file_name();
                 let name = file_name.to_string_lossy();
-                if name.starts_with(".tmp") {
+                let stale_tmp = name.starts_with(".tmp");
+                let stale_upload =
+                    name.starts_with(".upload.") && is_stale_upload(&entry.path(), &name);
+                if stale_tmp || stale_upload {
                     let _ = fs::remove_file(entry.path());
                 }
             }
@@ -113,11 +116,8 @@ impl Store {
         Ok(())
     }
 
-    pub fn check_name_collision(&self, _dir: &Path, name: &CrateName) -> Result<()> {
-        for base in [self.native_dir(), self.upstream_dir()] {
-            self.check_collision_in(&base, name)?;
-        }
-        Ok(())
+    pub fn check_name_collision(&self, dir: &Path, name: &CrateName) -> Result<()> {
+        self.check_collision_in(dir, name)
     }
 
     fn check_collision_in(&self, dir: &Path, name: &CrateName) -> Result<()> {
@@ -127,16 +127,35 @@ impl Store {
         let norm = name.norm_key();
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                let existing_dir_name = entry.file_name().to_string_lossy().to_string();
-                if let Ok(existing_crate) = CrateName::new(&existing_dir_name)
-                    && existing_crate.norm_key() == norm
-                    && existing_crate.as_str() != name.as_str()
-                {
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let crate_dir = entry.path();
+            let dir_name = entry.file_name().to_string_lossy().to_string();
+            let dir_norm = dir_name.to_lowercase().replace('_', "-");
+            if dir_norm != norm {
+                continue;
+            }
+            match canonical_names_in(&crate_dir)? {
+                None => {
+                    if dir_name != name.lower() && dir_norm == norm {
+                        let existing = canonical_fallback(&crate_dir);
+                        return Err(Error::Conflict(format!(
+                            "crate name collision: '{}' conflicts with existing '{}'",
+                            name.as_str(),
+                            existing.unwrap_or(dir_name)
+                        )));
+                    }
+                }
+                Some(canonicals) => {
+                    if canonicals.iter().any(|c| c == name.as_str()) {
+                        continue;
+                    }
+                    let existing = canonicals.into_iter().next().unwrap_or(dir_name);
                     return Err(Error::Conflict(format!(
                         "crate name collision: '{}' conflicts with existing '{}'",
                         name.as_str(),
-                        existing_crate.as_str()
+                        existing
                     )));
                 }
             }
@@ -498,4 +517,65 @@ impl Store {
 
         Ok(())
     }
+}
+
+fn canonical_names_in(crate_dir: &Path) -> Result<Option<Vec<String>>> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(crate_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        if ext != "toml" && ext != "json" {
+            continue;
+        }
+        let fname = path.file_name().unwrap().to_string_lossy();
+        if fname.starts_with(".tmp") {
+            continue;
+        }
+        let data = fs::read_to_string(&path)?;
+        let name_opt = if ext == "toml" {
+            toml::from_str::<toml::Value>(&data)
+                .ok()
+                .and_then(|v| v.get("name")?.as_str().map(|s| s.to_string()))
+        } else {
+            serde_json::from_str::<serde_json::Value>(&data)
+                .ok()
+                .and_then(|v| v.get("name")?.as_str().map(|s| s.to_string()))
+        };
+        if let Some(n) = name_opt {
+            out.push(n);
+        }
+    }
+    if out.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(out))
+    }
+}
+
+fn canonical_fallback(crate_dir: &Path) -> Option<String> {
+    crate_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+}
+
+fn is_stale_upload(path: &Path, name: &str) -> bool {
+    let this_pid = std::process::id().to_string();
+    let parts: Vec<&str> = name.split('.').collect();
+    if parts.len() >= 5 && parts[1] == "upload" {
+        if parts[2] != this_pid {
+            return true;
+        }
+        if let Ok(meta) = fs::metadata(path)
+            && let Ok(mtime) = meta.modified()
+            && let Ok(elapsed) = std::time::SystemTime::now().duration_since(mtime)
+        {
+            return elapsed.as_secs() >= 300;
+        }
+        return false;
+    }
+    true
 }

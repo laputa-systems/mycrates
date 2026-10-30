@@ -237,3 +237,103 @@ fn staging_recovery() {
     assert!(!stale_staging.exists());
     assert!(!stale_tmp.exists());
 }
+
+#[test]
+fn interrupted_temp_symlink_does_not_block_recovery() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().join("state"));
+    let site = dir.path().join("site");
+    fs::create_dir_all(&site).unwrap();
+    store.ensure_dirs().unwrap();
+
+    let tmp_link = site.join(".current.tmp.1.2.3");
+    std::os::unix::fs::symlink("generations/ghost", &tmp_link).unwrap();
+    assert!(tmp_link.is_symlink());
+
+    let publ = Publisher::new(&store, site.clone(), "http://localhost:8080".to_string());
+    let res = publ.publish().unwrap();
+    assert!(!tmp_link.exists() && !tmp_link.is_symlink(), "owned temp symlink must be cleaned");
+    let current = site.join("current");
+    assert!(current.is_symlink());
+    assert_eq!(fs::read_link(&current).unwrap().to_string_lossy(), format!("generations/{}", res.generation_id));
+}
+
+#[test]
+fn temp_symlink_pointing_to_dir_is_unlinked_not_traversed() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().join("state"));
+    let site = dir.path().join("site");
+    fs::create_dir_all(&site).unwrap();
+    store.ensure_dirs().unwrap();
+
+    let gen_dir = site.join("generations/keepme");
+    fs::create_dir_all(&gen_dir).unwrap();
+    fs::write(gen_dir.join("config.json"), b"keep").unwrap();
+    let tmp_link = site.join(".current.tmp.9.9.9");
+    std::os::unix::fs::symlink("generations/keepme", &tmp_link).unwrap();
+
+    let publ = Publisher::new(&store, site.clone(), "http://localhost:8080".to_string());
+    publ.recover_staging().unwrap();
+    assert!(!tmp_link.is_symlink());
+    assert!(gen_dir.exists(), "recover must unlink the symlink, not delete its target");
+    assert!(gen_dir.join("config.json").exists());
+}
+
+#[test]
+fn large_blob_publishes_via_streaming() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().join("state"));
+    let site = dir.path().join("site");
+    let big: Vec<u8> = (0..2_000_000u32).map(|i| (i % 251) as u8).collect();
+    let sha = store.ingest_blob(Cursor::new(&big)).unwrap();
+    let rec = NativeRecord {
+        name: "big-pkg".to_string(),
+        vers: "1.0.0".to_string(),
+        checksum: sha.clone(),
+        yanked: false,
+        entry: sample_entry("big-pkg", "1.0.0", &sha),
+    };
+    store.put_native_record(&rec).unwrap();
+    let publ = Publisher::new(&store, site.clone(), "http://localhost:8080".to_string());
+    let res = publ.publish().unwrap();
+    assert!(!res.is_noop);
+    let served = fs::read(site.join("blobs").join(format!("{}.crate", sha))).unwrap();
+    assert_eq!(served.len(), big.len());
+}
+
+#[test]
+fn interrupted_upload_leaves_no_permanent_partial() {    use mycrates::wire::decode_publish_payload;
+    let dir = tempdir().unwrap();
+    let staging = dir.path().join("blobs");
+    fs::create_dir_all(&staging).unwrap();
+    let json = serde_json::json!({"name":"x","vers":"1.0.0","deps":[],"features":{}}).to_string();
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    payload.extend_from_slice(json.as_bytes());
+    payload.extend_from_slice(&100u32.to_le_bytes());
+    payload.extend_from_slice(&[0u8; 10]);
+    struct Truncated(Vec<u8>);
+    impl std::io::Read for Truncated {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.0.is_empty() {
+                return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "disconnect"));
+            }
+            let n = buf.len().min(self.0.len()).min(3);
+            buf[..n].copy_from_slice(&self.0[..n]);
+            self.0.drain(..n);
+            Ok(n)
+        }
+    }
+    let content_len = (4 + json.len() + 4 + 100) as u64;
+    let reader = Truncated(payload);
+    let err = decode_publish_payload(reader, content_len, 10 * 1024 * 1024, &staging).unwrap_err();
+    assert!(format!("{err}").contains("failed to read crate bytes"));
+    let leftovers: Vec<_> = fs::read_dir(&staging).unwrap().collect();
+    assert!(leftovers.is_empty(), "partial upload must be cleaned, found {leftovers:?}");
+    let blobs_store = Store::new(dir.path().join("state3"));
+    blobs_store.ensure_dirs().unwrap();
+    let bdir = blobs_store.blobs_dir();
+    fs::write(bdir.join(".upload.orphan.999"), b"partial").unwrap();
+    blobs_store.recover_staging().unwrap();
+    assert!(!bdir.join(".upload.orphan.999").exists());
+}

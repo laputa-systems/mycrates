@@ -78,7 +78,10 @@ impl<'a> Publisher<'a> {
                 let fname = entry.file_name().to_string_lossy().to_string();
                 if fname.starts_with(".staging") || fname.starts_with(".current.tmp") {
                     let path = entry.path();
-                    if path.is_dir() {
+                    let ft = fs::symlink_metadata(&path)?.file_type();
+                    if ft.is_symlink() {
+                        let _ = fs::remove_file(&path);
+                    } else if ft.is_dir() {
                         let _ = fs::remove_dir_all(&path);
                     } else {
                         let _ = fs::remove_file(&path);
@@ -95,14 +98,7 @@ impl<'a> Publisher<'a> {
             return Err(Error::Integrity(format!("missing blob in store: {}", sha256)));
         }
 
-        let src_bytes = File::open(&src_blob).and_then(|mut f| {
-            let mut buf = Vec::new();
-            f.read_to_end(&mut buf)?;
-            Ok(buf)
-        })?;
-        let mut hasher = Sha256::new();
-        hasher.update(&src_bytes);
-        let actual_sha = format!("{:x}", hasher.finalize_reset());
+        let actual_sha = stream_file_hash(&src_blob)?;
         if actual_sha != sha256 {
             return Err(Error::Integrity(format!(
                 "tampered blob in store: {} (expected {}, got {})",
@@ -114,12 +110,8 @@ impl<'a> Publisher<'a> {
 
         let dst_blob = self.blobs_dir().join(format!("{}.crate", sha256));
         if dst_blob.exists() {
-            let dst_bytes = File::open(&dst_blob).and_then(|mut f| {
-                let mut buf = Vec::new();
-                f.read_to_end(&mut buf)?;
-                Ok(buf)
-            })?;
-            if dst_bytes == src_bytes {
+            let dst_sha = stream_file_hash(&dst_blob)?;
+            if dst_sha == sha256 {
                 return Ok(());
             }
             return Err(Error::Integrity(format!(
@@ -135,35 +127,32 @@ impl<'a> Publisher<'a> {
                 STAGING_COUNTER.fetch_add(1, Ordering::SeqCst)
             ));
             {
-                let mut f = OpenOptions::new().create_new(true).write(true).open(&tmp)?;
-                f.write_all(&src_bytes)?;
-                f.sync_all()?;
+                let mut src = File::open(&src_blob)?;
+                let mut dst = OpenOptions::new().create_new(true).write(true).open(&tmp)?;
+                let mut buf = [0u8; 65536];
+                loop {
+                    let n = src.read(&mut buf)?;
+                    if n == 0 {
+                        break;
+                    }
+                    dst.write_all(&buf[..n])?;
+                }
+                dst.sync_all()?;
             }
             fs::rename(&tmp, &dst_blob).map_err(|_| {
                 let _ = fs::remove_file(&tmp);
                 Error::Integrity(format!("served blob changed during install: {}", sha256))
             })?;
-            if File::open(&dst_blob)
-                .and_then(|mut f| {
-                    let mut buf = Vec::new();
-                    f.read_to_end(&mut buf)?;
-                    Ok(buf)
-                })
-                .map(|b| b != src_bytes)
-                .unwrap_or(true)
-            {
+            let installed_sha = stream_file_hash(&dst_blob)?;
+            if installed_sha != sha256 {
                 return Err(Error::Integrity(format!(
                     "served blob changed during install: {}",
                     sha256
                 )));
             }
         } else {
-            let dst_bytes = File::open(&dst_blob).and_then(|mut f| {
-                let mut buf = Vec::new();
-                f.read_to_end(&mut buf)?;
-                Ok(buf)
-            })?;
-            if dst_bytes != src_bytes {
+            let dst_sha = stream_file_hash(&dst_blob)?;
+            if dst_sha != sha256 {
                 return Err(Error::Integrity(format!(
                     "served blob mismatch for {}: destination is stale or replaced",
                     sha256
@@ -199,9 +188,9 @@ impl<'a> Publisher<'a> {
     }
 
     pub fn publish(&self) -> Result<PublishResult> {
-        self.check_no_symlinks_in_path()?;
         self.store.recover_staging()?;
         self.recover_staging()?;
+        self.check_no_symlinks_in_path()?;
 
         fs::create_dir_all(&self.site_dir)?;
         sync_dir(&self.site_dir)?;
@@ -414,4 +403,18 @@ fn walk_files(dir: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(out)
+}
+
+fn stream_file_hash(path: &Path) -> Result<String> {
+    let mut f = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }

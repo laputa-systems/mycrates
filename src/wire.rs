@@ -100,21 +100,37 @@ pub fn decode_publish_payload<R: Read>(
 
     let spill = spill_path(staging_dir);
     let mut staged_file = OpenOptions::new().create_new(true).write(true).open(&spill)?;
+    let cleanup = TmpCleanup(spill.clone());
     let mut hasher = Sha256::new();
     let mut remaining = crate_len;
     let mut buf = vec![0u8; 65536];
     while remaining > 0 {
         let want = (remaining.min(buf.len() as u64)) as usize;
-        reader
+        if let Err(e) = reader
             .read_exact(&mut buf[..want])
-            .map_err(|e| Error::Input(format!("failed to read crate bytes: {e}")))?;
+            .map_err(|e| Error::Input(format!("failed to read crate bytes: {e}")))
+        {
+            drop(staged_file);
+            drop(cleanup);
+            return Err(e);
+        }
         hasher.update(&buf[..want]);
-        staged_file
+        if let Err(e) = staged_file
             .write_all(&buf[..want])
-            .map_err(|e| Error::Operation(format!("failed to stage upload: {e}")))?;
+            .map_err(|e| Error::Operation(format!("failed to stage upload: {e}")))
+        {
+            drop(staged_file);
+            drop(cleanup);
+            return Err(e);
+        }
         remaining -= want as u64;
     }
-    staged_file.sync_all()?;
+    if let Err(e) = staged_file.sync_all().map_err(Error::from) {
+        drop(staged_file);
+        drop(cleanup);
+        return Err(e);
+    }
+    drop(staged_file);
     let crate_sha256 = format!("{:x}", hasher.finalize_reset());
 
     Ok(StagedUpload {
@@ -122,6 +138,6 @@ pub fn decode_publish_payload<R: Read>(
         crate_bytes_path: spill.clone(),
         crate_len,
         crate_sha256,
-        _cleanup: TmpCleanup(spill),
+        _cleanup: cleanup,
     })
 }
