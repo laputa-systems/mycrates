@@ -350,6 +350,14 @@ fn parse_dep_spec(
         if let Some(r) = t.get("registry").and_then(|x| x.as_str()) {
             registry = Some(r.to_string());
         }
+        if let Some(r) = t.get("registry-index").and_then(|x| x.as_str()) {
+            if registry.is_some() {
+                return Err(Error::Integrity(format!(
+                    "dependency '{alias}' sets both registry and registry-index"
+                )));
+            }
+            registry = Some(r.to_string());
+        }
         if t.get("git").is_some() || t.get("path").is_some() {
             return Err(Error::Integrity(format!("dependency '{alias}' uses git/path source")));
         }

@@ -154,112 +154,211 @@ fn reconcile_manifest(body: &PublishBody, manifest: &crate::crate_file::Packaged
             "rust_version mismatch between archive and publish metadata".to_string(),
         ));
     }
-    if manifest.features != body.features {
+    if !features_equal(&manifest.features, &body.features) {
         return Err(Error::Integrity("features mismatch between archive and publish metadata".to_string()));
     }
-    let mut packaged: Vec<(&str, &crate::crate_file::PackagedDep)> = Vec::new();
-    for d in &manifest.dependencies {
-        if d.kind.as_deref() == Some("dev") {
-            continue;
-        }
-        let registry = match d.registry.as_deref() {
-            Some("") | None => None,
-            Some(r) => Some(r),
-        };
-        if registry.is_some() && registry != Some("https://github.com/rust-lang/crates.io-index") {
-            return Err(Error::Integrity(format!(
-                "dependency '{}' uses unsupported registry",
-                d.alias
-            )));
-        }
-        packaged.push((d.alias.as_str(), d));
+    use std::collections::BTreeMap;
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    struct DepKey {
+        alias: String,
+        real: String,
+        kind: String,
+        target: Option<String>,
     }
-    if packaged.len() != body.deps.len() {
-        return Err(Error::Integrity(format!(
-            "dependency count mismatch: archive has {}, publish metadata has {}",
-            packaged.len(),
-            body.deps.len()
-        )));
+    struct NormDep<'a> {
+        key: DepKey,
+        version_req: &'a str,
+        features: &'a [String],
+        optional: bool,
+        default_features: bool,
+        registry: Option<&'a str>,
+        package: Option<&'a str>,
     }
-    for dep in &body.deps {
+    fn publish_alias_real(dep: &crate::model::Dependency) -> Result<(String, String)> {
         let (alias, real) = match (&dep.explicit_name_in_toml, &dep.name, &dep.package) {
-            // cargo publish JSON for a renamed dep: name=Some(real), package=None, explicit=Some(alias)
             (Some(explicit), name, package) => (
                 explicit.as_str(),
-                package.as_deref().or(name.as_deref()).or(Some(explicit.as_str())),
+                package.as_deref().or(name.as_deref()).unwrap_or(explicit.as_str()),
             ),
-            // unrenamed dep: name=Some(x), package=None -> real is x
-            // renamed without explicit marker: name=Some(alias), package=Some(real)
-            (None, Some(n), pkg) => (n.as_str(), pkg.as_deref().or(Some(n.as_str()))),
+            (None, Some(n), pkg) => (n.as_str(), pkg.as_deref().unwrap_or(n.as_str())),
             (None, None, _) => {
                 return Err(Error::Integrity("publish dependency missing name".to_string()));
             }
         };
-        let found = packaged.iter().find(|(a, d)| {
-            *a == alias
-                && match (&d.package, real) {
-                    (Some(p), Some(r)) => p == r,
-                    // packaged dep without rename: alias is the real name
-                    (None, Some(r)) => d.alias == r,
-                    (Some(p), None) => p == alias,
-                    (None, None) => true,
-                }
+        Ok((alias.to_string(), real.to_string()))
+    }
+    let mut packaged_norm: Vec<NormDep<'_>> = Vec::new();
+    for d in &manifest.dependencies {
+        let real = d.package.clone().unwrap_or_else(|| d.alias.clone());
+        let kind = d.kind.clone().unwrap_or_else(|| "normal".to_string());
+        packaged_norm.push(NormDep {
+            key: DepKey {
+                alias: d.alias.clone(),
+                real,
+                kind,
+                target: d.target.clone(),
+            },
+            version_req: d.version_req.as_str(),
+            features: d.features.as_slice(),
+            optional: d.optional,
+            default_features: d.default_features,
+            registry: match d.registry.as_deref() {
+                Some("") | None => None,
+                Some(r) => Some(r),
+            },
+            package: d.package.as_deref(),
         });
-        let (_, expected) = found.ok_or_else(|| {
-            Error::Integrity(format!("dependency '{alias}' not in packaged manifest"))
-        })?;
-        if !version_req_matches(&dep.version_req, &expected.version_req) {
+    }
+    let mut publish_norm: Vec<(NormDep<'_>, &crate::model::Dependency)> = Vec::new();
+    for dep in &body.deps {
+        let (alias, real) = publish_alias_real(dep)?;
+        let kind = dep.kind.clone().unwrap_or_else(|| "normal".to_string());
+        publish_norm.push((
+            NormDep {
+                key: DepKey {
+                    alias,
+                    real,
+                    kind,
+                    target: dep.target.clone(),
+                },
+                version_req: dep.version_req.as_str(),
+                features: dep.features.as_slice(),
+                optional: dep.optional,
+                default_features: dep.default_features,
+                registry: match dep.registry.as_deref() {
+                    Some("") | None => None,
+                    Some(r) => Some(r),
+                },
+                package: dep.package.as_deref(),
+            },
+            dep,
+        ));
+    }
+    if packaged_norm.len() != publish_norm.len() {
+        return Err(Error::Integrity(format!(
+            "dependency count mismatch: archive has {}, publish metadata has {}",
+            packaged_norm.len(),
+            publish_norm.len()
+        )));
+    }
+    let mut packaged_by_key: BTreeMap<DepKey, Vec<usize>> = BTreeMap::new();
+    for (i, d) in packaged_norm.iter().enumerate() {
+        packaged_by_key.entry(d.key.clone()).or_default().push(i);
+    }
+    let mut publish_by_key: BTreeMap<DepKey, Vec<usize>> = BTreeMap::new();
+    for (i, (d, _)) in publish_norm.iter().enumerate() {
+        publish_by_key.entry(d.key.clone()).or_default().push(i);
+    }
+    if packaged_by_key.keys().collect::<Vec<_>>() != publish_by_key.keys().collect::<Vec<_>>() {
+        let mut missing = Vec::new();
+        for k in packaged_by_key.keys() {
+            if !publish_by_key.contains_key(k) {
+                missing.push(format!("archive-only '{}' kind={} target={:?}", k.alias, k.kind, k.target));
+            }
+        }
+        for k in publish_by_key.keys() {
+            if !packaged_by_key.contains_key(k) {
+                missing.push(format!("publish-only '{}' kind={} target={:?}", k.alias, k.kind, k.target));
+            }
+        }
+        return Err(Error::Integrity(format!(
+            "dependency set mismatch (alias/package/kind/target): {}",
+            missing.join("; ")
+        )));
+    }
+    for (key, p_idxs) in &packaged_by_key {
+        let g_idxs = &publish_by_key[key];
+        if p_idxs.len() != g_idxs.len() {
             return Err(Error::Integrity(format!(
-                "dependency '{alias}' version_req mismatch: archive '{}' vs publish '{}'",
-                expected.version_req, dep.version_req
+                "dependency '{}' count mismatch for kind={} target={:?}",
+                key.alias, key.kind, key.target
             )));
         }
-        if dep.features != expected.features
-            || dep.optional != expected.optional
-            || dep.default_features != expected.default_features
-        {
-            return Err(Error::Integrity(format!("dependency '{alias}' flags mismatch")));
-        }
-        if dep.kind.as_deref().or(Some("normal")) != expected.kind.as_deref().or(Some("normal")) {
-            return Err(Error::Integrity(format!("dependency '{alias}' kind mismatch")));
-        }
-        if dep.target != expected.target {
-            return Err(Error::Integrity(format!("dependency '{alias}' target mismatch")));
-        }
-        let expected_registry = match expected.registry.as_deref() {
-            Some("") | None => None,
-            Some(r) => {
-                if r != "https://github.com/rust-lang/crates.io-index" {
-                    return Err(Error::Integrity(format!(
-                        "dependency '{alias}' uses unsupported registry '{r}'"
-                    )));
-                }
-                Some("https://github.com/rust-lang/crates.io-index".to_string())
+        for (pi, gi) in p_idxs.iter().zip(g_idxs.iter()) {
+            let expected = &packaged_norm[*pi];
+            let (got, raw) = &publish_norm[*gi];
+            let alias = &key.alias;
+            if !version_req_matches(got.version_req, expected.version_req) {
+                return Err(Error::Integrity(format!(
+                    "dependency '{alias}' version_req mismatch: archive '{}' vs publish '{}'",
+                    expected.version_req, got.version_req
+                )));
             }
-        };
-        let got_registry = match dep.registry.as_deref() {
-            Some("") | None => None,
-            Some(r) => Some(r.to_string()),
-        };
-        match (got_registry, expected_registry) {
-            (None, None) => {}
-            (Some(g), Some(e)) if g == e => {}
-            (Some(g), None) if g == "https://github.com/rust-lang/crates.io-index" && expected.package.is_some() => {}
-            _ => {
-                return Err(Error::Integrity(format!("dependency '{alias}' registry mismatch")));
+            if !str_sets_equal(got.features, expected.features)
+                || got.optional != expected.optional
+                || got.default_features != expected.default_features
+            {
+                return Err(Error::Integrity(format!("dependency '{alias}' flags mismatch")));
             }
-        }
-        if dep.package != expected.package
-            && !(dep.package.is_none() && expected.package.as_deref() == Some(alias))
-            && !(expected.package.is_none()
-                && dep.package.as_deref() == Some(alias)
-                && dep.explicit_name_in_toml.as_deref() == Some(alias))
-            && !(dep.package.is_none() && expected.package.is_some() && real == expected.package.as_deref())
-        {
-            return Err(Error::Integrity(format!("dependency '{alias}' package mismatch")));
+            match_registry(got.registry, expected.registry, alias)?;
+            if !package_matches(raw, expected.package, alias) {
+                return Err(Error::Integrity(format!("dependency '{alias}' package mismatch")));
+            }
         }
     }
     Ok(())
+}
+
+fn features_equal(a: &std::collections::BTreeMap<String, Vec<String>>, b: &std::collections::BTreeMap<String, Vec<String>>) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    for (k, av) in a {
+        match b.get(k) {
+            Some(bv) if str_sets_equal(av, bv) => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+fn str_sets_equal(a: &[String], b: &[String]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut sa: Vec<&str> = a.iter().map(|s| s.as_str()).collect();
+    let mut sb: Vec<&str> = b.iter().map(|s| s.as_str()).collect();
+    sa.sort_unstable();
+    sb.sort_unstable();
+    sa == sb
+}
+
+fn is_crates_io_registry(v: &str) -> bool {
+    v == "https://github.com/rust-lang/crates.io-index"
+}
+
+fn match_registry(got: Option<&str>, expected: Option<&str>, alias: &str) -> Result<()> {
+    match (got, expected) {
+        (None, None) => Ok(()),
+        (Some(g), None) if is_crates_io_registry(g) => Ok(()),
+        (None, Some(e)) if !is_crates_io_registry(e) => Ok(()),
+        (Some(g), Some(e)) if g == e && is_crates_io_registry(g) => Ok(()),
+        (Some(g), Some(e)) if g == e => Err(Error::Integrity(format!(
+            "dependency '{alias}' uses unsupported registry '{g}'"
+        ))),
+        _ => Err(Error::Integrity(format!("dependency '{alias}' registry mismatch"))),
+    }
+}
+
+fn package_matches(raw: &crate::model::Dependency, expected_package: Option<&str>, alias: &str) -> bool {
+    if raw.package.as_deref() == expected_package {
+        return true;
+    }
+    if raw.package.is_none() && expected_package == Some(alias) {
+        return true;
+    }
+    if expected_package.is_none()
+        && raw.package.as_deref() == Some(alias)
+        && raw.explicit_name_in_toml.as_deref() == Some(alias)
+    {
+        return true;
+    }
+    let real = raw
+        .package
+        .as_deref()
+        .or(raw.name.as_deref())
+        .or(raw.explicit_name_in_toml.as_deref());
+    raw.package.is_none() && expected_package.is_some() && real == expected_package
 }
 
 fn version_req_matches(publish_req: &str, packaged_req: &str) -> bool {
