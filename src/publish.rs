@@ -1,11 +1,12 @@
 use crate::error::{Error, Result};
+use crate::fsync::{sync_dir, write_file_durable};
 use crate::index::{mirror_config_json, native_config_json, serialize_index_line, shard_for_name};
 use crate::model::CrateName;
 use crate::store::Store;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::fs::{self, File};
-use std::io::Read;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -94,16 +95,13 @@ impl<'a> Publisher<'a> {
             return Err(Error::Integrity(format!("missing blob in store: {}", sha256)));
         }
 
-        let mut f = File::open(&src_blob)?;
+        let src_bytes = File::open(&src_blob).and_then(|mut f| {
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf)?;
+            Ok(buf)
+        })?;
         let mut hasher = Sha256::new();
-        let mut buf = [0u8; 8192];
-        loop {
-            let n = f.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-        }
+        hasher.update(&src_bytes);
         let actual_sha = format!("{:x}", hasher.finalize_reset());
         if actual_sha != sha256 {
             return Err(Error::Integrity(format!(
@@ -115,19 +113,102 @@ impl<'a> Publisher<'a> {
         }
 
         let dst_blob = self.blobs_dir().join(format!("{}.crate", sha256));
-        if !dst_blob.exists() && fs::hard_link(&src_blob, &dst_blob).is_err() {
-            fs::copy(&src_blob, &dst_blob)?;
+        if dst_blob.exists() {
+            let dst_bytes = File::open(&dst_blob).and_then(|mut f| {
+                let mut buf = Vec::new();
+                f.read_to_end(&mut buf)?;
+                Ok(buf)
+            })?;
+            if dst_bytes == src_bytes {
+                return Ok(());
+            }
+            return Err(Error::Integrity(format!(
+                "served blob mismatch for {}: destination is stale or replaced",
+                sha256
+            )));
         }
+        fs::create_dir_all(self.blobs_dir())?;
+        if fs::hard_link(&src_blob, &dst_blob).is_err() {
+            let tmp = self.blobs_dir().join(format!(
+                ".tmp.install.{}.{}.crate",
+                std::process::id(),
+                STAGING_COUNTER.fetch_add(1, Ordering::SeqCst)
+            ));
+            {
+                let mut f = OpenOptions::new().create_new(true).write(true).open(&tmp)?;
+                f.write_all(&src_bytes)?;
+                f.sync_all()?;
+            }
+            fs::rename(&tmp, &dst_blob).map_err(|_| {
+                let _ = fs::remove_file(&tmp);
+                Error::Integrity(format!("served blob changed during install: {}", sha256))
+            })?;
+            if File::open(&dst_blob)
+                .and_then(|mut f| {
+                    let mut buf = Vec::new();
+                    f.read_to_end(&mut buf)?;
+                    Ok(buf)
+                })
+                .map(|b| b != src_bytes)
+                .unwrap_or(true)
+            {
+                return Err(Error::Integrity(format!(
+                    "served blob changed during install: {}",
+                    sha256
+                )));
+            }
+        } else {
+            let dst_bytes = File::open(&dst_blob).and_then(|mut f| {
+                let mut buf = Vec::new();
+                f.read_to_end(&mut buf)?;
+                Ok(buf)
+            })?;
+            if dst_bytes != src_bytes {
+                return Err(Error::Integrity(format!(
+                    "served blob mismatch for {}: destination is stale or replaced",
+                    sha256
+                )));
+            }
+        }
+        sync_dir(&self.blobs_dir())?;
         Ok(())
+    }
+
+    fn generation_matches(&self, gen_dir: &Path, expected_manifest: &BTreeMap<(String, String), String>) -> Result<bool> {
+        for ((view, rel), sha) in expected_manifest {
+            let p = gen_dir.join(view).join(rel);
+            let Ok(bytes) = fs::read(&p) else {
+                return Ok(false);
+            };
+            let mut h = Sha256::new();
+            h.update(&bytes);
+            if format!("{:x}", h.finalize_reset()) != *sha {
+                return Ok(false);
+            }
+        }
+        for blob in self.blobs_under(gen_dir)? {
+            if !self.store.blobs_dir().join(&blob).exists() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn blobs_under(&self, _gen_dir: &Path) -> Result<Vec<String>> {
+        Ok(Vec::new())
     }
 
     pub fn publish(&self) -> Result<PublishResult> {
         self.check_no_symlinks_in_path()?;
+        self.store.recover_staging()?;
         self.recover_staging()?;
 
         fs::create_dir_all(&self.site_dir)?;
+        sync_dir(&self.site_dir)?;
         fs::create_dir_all(self.blobs_dir())?;
+        sync_dir(&self.blobs_dir())?;
         fs::create_dir_all(self.generations_dir())?;
+        sync_dir(&self.generations_dir())?;
 
         let native_records = self.store.load_native_records()?;
         let upstream_records = self.store.load_upstream_records()?;
@@ -158,14 +239,14 @@ impl<'a> Publisher<'a> {
 
         let native_cfg = native_config_json(&self.public_base_url);
         let native_cfg_path = staging_registry.join("config.json");
-        fs::write(&native_cfg_path, &native_cfg)?;
+        write_file_durable(&native_cfg_path, native_cfg.as_bytes())?;
         let mut h = Sha256::new();
         h.update(native_cfg.as_bytes());
         manifest.insert(("registry".to_string(), "config.json".to_string()), format!("{:x}", h.finalize_reset()));
 
         let mirror_cfg = mirror_config_json(&self.public_base_url);
         let mirror_cfg_path = staging_mirror.join("config.json");
-        fs::write(&mirror_cfg_path, &mirror_cfg)?;
+        write_file_durable(&mirror_cfg_path, mirror_cfg.as_bytes())?;
         let mut h = Sha256::new();
         h.update(mirror_cfg.as_bytes());
         manifest.insert(("crates-io".to_string(), "config.json".to_string()), format!("{:x}", h.finalize_reset()));
@@ -198,7 +279,7 @@ impl<'a> Publisher<'a> {
                 lines.push(line);
             }
             let content = format!("{}\n", lines.join("\n"));
-            fs::write(&out_path, &content)?;
+            write_file_durable(&out_path, content.as_bytes())?;
 
             let mut h = Sha256::new();
             h.update(content.as_bytes());
@@ -232,7 +313,7 @@ impl<'a> Publisher<'a> {
                 lines.push(r.raw_index_line.trim().to_string());
             }
             let content = format!("{}\n", lines.join("\n"));
-            fs::write(&out_path, &content)?;
+            write_file_durable(&out_path, content.as_bytes())?;
 
             let mut h = Sha256::new();
             h.update(content.as_bytes());
@@ -250,24 +331,61 @@ impl<'a> Publisher<'a> {
 
         let target_gen_dir = self.generations_dir().join(&gen_id);
 
+        sync_dir(&staging_dir)?;
+        sync_dir(&staging_dir.join("registry"))?;
+        sync_dir(&staging_dir.join("crates-io"))?;
+        for entry in walk_files(&staging_dir)? {
+            if let Some(parent) = entry.parent() {
+                sync_dir(parent)?;
+            }
+        }
+
         if self.current_link().is_symlink()
             && let Ok(link_target) = fs::read_link(self.current_link())
         {
             let expected_rel = Path::new("generations").join(&gen_id);
             if link_target == expected_rel {
-                let _ = fs::remove_dir_all(&staging_dir);
-                return Ok(PublishResult {
-                    generation_id: gen_id,
-                    is_noop: true,
-                });
+                let gen_dir = self.site_dir.join(&link_target);
+                if self.generation_matches(&gen_dir, &manifest)? {
+                    let _ = fs::remove_dir_all(&staging_dir);
+                    sync_dir(&self.site_dir)?;
+                    return Ok(PublishResult {
+                        generation_id: gen_id,
+                        is_noop: true,
+                    });
+                }
             }
         }
 
+        let mut installed = false;
         if !target_gen_dir.exists() {
             fs::rename(&staging_dir, &target_gen_dir)?;
+            sync_dir(&self.generations_dir())?;
+            installed = true;
+            if !self.generation_matches(&target_gen_dir, &manifest)? {
+                return Err(Error::Integrity(format!(
+                    "installed generation {} failed verification",
+                    gen_id
+                )));
+            }
         } else {
-            let _ = fs::remove_dir_all(&staging_dir);
+            if self.generation_matches(&target_gen_dir, &manifest)? {
+                let _ = fs::remove_dir_all(&staging_dir);
+            } else {
+                let _ = fs::remove_dir_all(&target_gen_dir);
+                fs::rename(&staging_dir, &target_gen_dir)?;
+                sync_dir(&self.generations_dir())?;
+                installed = true;
+                if !self.generation_matches(&target_gen_dir, &manifest)? {
+                    return Err(Error::Integrity(format!(
+                        "reinstalled generation {} failed verification",
+                        gen_id
+                    )));
+                }
+            }
         }
+        let _ = installed;
+        sync_dir(&self.site_dir)?;
 
         let tmp_link_name = format!(".current.tmp.{}.{}.{}", pid, nanos, cnt);
         let tmp_link = self.site_dir.join(&tmp_link_name);
@@ -275,10 +393,25 @@ impl<'a> Publisher<'a> {
 
         unix_fs::symlink(&rel_target, &tmp_link)?;
         fs::rename(&tmp_link, self.current_link())?;
+        sync_dir(&self.site_dir)?;
 
         Ok(PublishResult {
             generation_id: gen_id,
             is_noop: false,
         })
     }
+}
+
+fn walk_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let p = entry.path();
+        if entry.file_type()?.is_dir() {
+            out.extend(walk_files(&p)?);
+        } else {
+            out.push(p);
+        }
+    }
+    Ok(out)
 }

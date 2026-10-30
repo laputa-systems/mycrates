@@ -20,7 +20,6 @@ pub mod doctor;
 pub mod validate;
 
 use crate::error::{Error, Result};
-use lexopt::prelude::*;
 
 #[derive(Debug)]
 pub enum Command {
@@ -59,30 +58,60 @@ fn parse_command(s: &str) -> Option<Command> {
 }
 
 pub fn parse_args() -> Result<Args> {
-    let mut parser = lexopt::Parser::from_env();
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from<I>(args: I) -> Result<Args>
+where
+    I: IntoIterator<Item = String>,
+{
     let mut cmd: Option<Command> = None;
+    let mut cmd_seen = false;
     let mut rest: Vec<String> = Vec::new();
 
-    while let Some(arg) = parser.next()? {
-        match arg {
-            Short('h') | Long("help") => {
+    for arg in args {
+        if !cmd_seen {
+            if arg == "-h" || arg == "--help" {
                 print_help();
                 std::process::exit(0);
             }
-            Value(v) => {
-                let s = v.to_string_lossy();
-                if cmd.is_none() && let Some(c) = parse_command(&s) {
-                    cmd = Some(c);
-                    continue;
-                }
-                rest.push(s.into_owned());
+            if arg.starts_with('-') {
+                return Err(Error::Input(format!(
+                    "unexpected global argument '{arg}'; expected a command"
+                )));
             }
-            _ => {}
+            match parse_command(&arg) {
+                Some(c) => {
+                    cmd = Some(c);
+                    cmd_seen = true;
+                }
+                None => {
+                    return Err(Error::Input(format!("unknown command '{arg}'")));
+                }
+            }
+            continue;
         }
+        if arg == "-h" || arg == "--help" {
+            print_help();
+            std::process::exit(0);
+        }
+        rest.push(arg);
     }
 
     let command = cmd.ok_or_else(|| Error::Input("missing command".to_string()))?;
     Ok(Args { command, args: rest })
+}
+
+pub(crate) fn take_value(args: &[String], i: &mut usize, flag: &str) -> Result<String> {
+    if *i + 1 >= args.len() {
+        return Err(Error::Input(format!("{flag} requires a value")));
+    }
+    *i += 1;
+    Ok(args[*i].clone())
+}
+
+pub(crate) fn reject_unknown(arg: &str, usage: &str) -> Result<()> {
+    Err(Error::Input(format!("unexpected argument '{arg}'\nusage: {usage}")))
 }
 
 pub fn print_help() {
@@ -91,17 +120,61 @@ pub fn print_help() {
     println!("Usage: mycrates <COMMAND> [OPTIONS]");
     println!();
     println!("Commands:");
-    println!("  init");
-    println!("  plan");
-    println!("  import-lock");
-    println!("  add");
-    println!("  fetch");
-    println!("  publish");
-    println!("  serve-publish");
-    println!("  verify");
-    println!("  doctor");
-    println!("  validate");
+    println!("  init [--state-dir DIR] [--site-dir DIR]");
+    println!("  plan [--state-dir DIR]");
+    println!("  import-lock <Cargo.lock> [--project NAME] [--state-dir DIR]");
+    println!("  add <name>@<version> [--state-dir DIR]");
+    println!("  fetch [--state-dir DIR] [--config PATH]");
+    println!("  publish [--state-dir DIR] [--site-dir DIR] [--config PATH]");
+    println!("  serve-publish [--bind ADDR] [--token-file PATH] [--state-dir DIR] [--site-dir DIR] [--config PATH]");
+    println!("  verify [--state-dir DIR]");
+    println!("  doctor [--state-dir DIR]");
+    println!("  validate [--state-dir DIR] [--project NAME] [--mirror-url URL] [--config PATH]");
     println!();
     println!("Options:");
     println!("  -h, --help  Print help");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn subcommand_options_reach_handlers() {
+        let a = parse_args_from(args(&[
+            "serve-publish",
+            "--bind",
+            "127.0.0.1:9999",
+            "--token-file",
+            "/etc/mycrates/token",
+        ]))
+        .unwrap();
+        assert!(matches!(a.command, Command::ServePublish));
+        assert_eq!(
+            a.args,
+            args(&["--bind", "127.0.0.1:9999", "--token-file", "/etc/mycrates/token"])
+        );
+    }
+
+    #[test]
+    fn unknown_command_rejected() {
+        let err = parse_args_from(args(&["frobnicate"])).unwrap_err();
+        assert!(format!("{err}").contains("unknown command"));
+    }
+
+    #[test]
+    fn global_option_rejected() {
+        let err = parse_args_from(args(&["--bind", "x"])).unwrap_err();
+        assert!(format!("{err}").contains("expected a command"));
+    }
+
+    #[test]
+    fn missing_command_rejected() {
+        let err = parse_args_from(args(&[])).unwrap_err();
+        assert!(format!("{err}").contains("missing command"));
+    }
 }

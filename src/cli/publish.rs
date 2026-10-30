@@ -1,9 +1,12 @@
+use crate::cli::{reject_unknown, take_value};
 use crate::config::Config;
 use crate::error::Result;
 use crate::publish::Publisher;
 use crate::store::Store;
 use std::env;
 use std::path::PathBuf;
+
+const USAGE: &str = "mycrates publish [--state-dir DIR] [--site-dir DIR] [--config PATH]";
 
 pub fn run(args: &[String]) -> Result<()> {
     let mut state_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(".work/state");
@@ -12,17 +15,22 @@ pub fn run(args: &[String]) -> Result<()> {
 
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--state-dir" && i + 1 < args.len() {
-            state_dir = PathBuf::from(&args[i + 1]);
-            i += 2;
-        } else if args[i] == "--site-dir" && i + 1 < args.len() {
-            site_dir = PathBuf::from(&args[i + 1]);
-            i += 2;
-        } else if args[i] == "--config" && i + 1 < args.len() {
-            cfg_path = Some(PathBuf::from(&args[i + 1]));
-            i += 2;
-        } else {
-            i += 1;
+        match args[i].as_str() {
+            "--state-dir" => {
+                state_dir = PathBuf::from(take_value(args, &mut i, "--state-dir")?);
+                i += 1;
+            }
+            "--site-dir" => {
+                site_dir = PathBuf::from(take_value(args, &mut i, "--site-dir")?);
+                i += 1;
+            }
+            "--config" => {
+                cfg_path = Some(PathBuf::from(take_value(args, &mut i, "--config")?));
+                i += 1;
+            }
+            other => {
+                return reject_unknown(other, USAGE);
+            }
         }
     }
 

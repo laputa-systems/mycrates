@@ -7,6 +7,7 @@ pub mod error;
 
 pub mod acquire;
 pub mod crate_file;
+pub mod fsync;
 pub mod index;
 pub mod lockfile;
 pub mod model;

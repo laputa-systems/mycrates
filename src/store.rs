@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::fsync::{sync_dir, write_file_durable};
 use crate::model::{CrateName, IndexEntry, Version};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
@@ -112,7 +113,14 @@ impl Store {
         Ok(())
     }
 
-    fn check_name_collision(&self, dir: &Path, name: &CrateName) -> Result<()> {
+    pub fn check_name_collision(&self, _dir: &Path, name: &CrateName) -> Result<()> {
+        for base in [self.native_dir(), self.upstream_dir()] {
+            self.check_collision_in(&base, name)?;
+        }
+        Ok(())
+    }
+
+    fn check_collision_in(&self, dir: &Path, name: &CrateName) -> Result<()> {
         if !dir.exists() {
             return Ok(());
         }
@@ -134,6 +142,29 @@ impl Store {
             }
         }
         Ok(())
+    }
+
+    pub fn ingest_staged_file(&self, path: &Path, expected_sha256: &str) -> Result<String> {
+        self.ensure_dirs()?;
+        let mut f = File::open(path)?;
+        let mut hasher = Sha256::new();
+        let mut buf = [0u8; 65536];
+        loop {
+            let n = f.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        let actual = format!("{:x}", hasher.finalize_reset());
+        if actual != expected_sha256 {
+            return Err(Error::Integrity(format!(
+                "staged file checksum changed before ingest: expected {}, got {}",
+                expected_sha256, actual
+            )));
+        }
+        let mut src = File::open(path)?;
+        self.ingest_blob(&mut src)
     }
 
     pub fn ingest_blob<R: Read>(&self, mut reader: R) -> Result<String> {
@@ -174,7 +205,44 @@ impl Store {
         }
 
         fs::rename(&tmp_path, &final_path)?;
+        sync_dir(&self.blobs_dir())?;
         Ok(checksum)
+    }
+
+    fn native_version_files(&self, crate_dir: &Path) -> Result<Vec<PathBuf>> {
+        let mut out = Vec::new();
+        if !crate_dir.exists() {
+            return Ok(out);
+        }
+        for entry in fs::read_dir(crate_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("toml")
+                && !path.file_name().unwrap().to_string_lossy().starts_with(".tmp")
+                && entry.file_type()?.is_file()
+            {
+                out.push(path);
+            }
+        }
+        Ok(out)
+    }
+
+    fn upstream_version_files(&self, crate_dir: &Path) -> Result<Vec<PathBuf>> {
+        let mut out = Vec::new();
+        if !crate_dir.exists() {
+            return Ok(out);
+        }
+        for entry in fs::read_dir(crate_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("json")
+                && !path.file_name().unwrap().to_string_lossy().starts_with(".tmp")
+                && entry.file_type()?.is_file()
+            {
+                out.push(path);
+            }
+        }
+        Ok(out)
     }
 
     pub fn put_native_record(&self, record: &NativeRecord) -> Result<bool> {
@@ -186,6 +254,27 @@ impl Store {
 
         let crate_dir = self.native_dir().join(name.lower());
         fs::create_dir_all(&crate_dir)?;
+
+        let uniq = ver.uniqueness_key();
+        for existing_path in self.native_version_files(&crate_dir)? {
+            if existing_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|stem| stem != ver.key())
+            {
+                let existing_data = fs::read_to_string(&existing_path)?;
+                let existing: NativeRecord = toml::from_str(&existing_data)
+                    .map_err(|e| Error::Integrity(format!("invalid native record {}: {e}", existing_path.display())))?;
+                if let Ok(existing_ver) = Version::new(&existing.vers)
+                    && existing_ver.uniqueness_key() == uniq
+                {
+                    return Err(Error::Conflict(format!(
+                        "version {} conflicts with existing {} (build metadata ignored for identity)",
+                        record.vers, existing.vers
+                    )));
+                }
+            }
+        }
 
         let record_path = crate_dir.join(format!("{}.toml", ver.key()));
         if record_path.exists() {
@@ -203,9 +292,7 @@ impl Store {
         }
 
         let s = toml::to_string_pretty(record).map_err(|e| Error::Operation(e.to_string()))?;
-        let tmp_path = crate_dir.join(format!(".tmp.{}.toml", ver.key()));
-        fs::write(&tmp_path, s)?;
-        fs::rename(&tmp_path, &record_path)?;
+        write_file_durable(&record_path, s.as_bytes())?;
         Ok(true)
     }
 
@@ -224,9 +311,7 @@ impl Store {
         record.yanked = yanked;
         record.entry.yanked = yanked;
         let s = toml::to_string_pretty(&record).map_err(|e| Error::Operation(e.to_string()))?;
-        let tmp_path = record_path.with_extension("tmp.toml");
-        fs::write(&tmp_path, s)?;
-        fs::rename(&tmp_path, &record_path)?;
+        write_file_durable(&record_path, s.as_bytes())?;
         Ok(())
     }
 
@@ -239,6 +324,27 @@ impl Store {
 
         let crate_dir = self.upstream_dir().join(name.lower());
         fs::create_dir_all(&crate_dir)?;
+
+        let uniq = ver.uniqueness_key();
+        for existing_path in self.upstream_version_files(&crate_dir)? {
+            if existing_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|stem| stem != ver.key())
+            {
+                let existing_data = fs::read_to_string(&existing_path)?;
+                let existing: UpstreamRecord = serde_json::from_str(&existing_data)
+                    .map_err(|e| Error::Integrity(format!("invalid upstream record {}: {e}", existing_path.display())))?;
+                if let Ok(existing_ver) = Version::new(&existing.vers)
+                    && existing_ver.uniqueness_key() == uniq
+                {
+                    return Err(Error::Conflict(format!(
+                        "upstream version {} conflicts with existing {} (build metadata ignored for identity)",
+                        record.vers, existing.vers
+                    )));
+                }
+            }
+        }
 
         let record_path = crate_dir.join(format!("{}.json", ver.key()));
         if record_path.exists() {
@@ -256,9 +362,7 @@ impl Store {
         }
 
         let s = serde_json::to_string_pretty(record).map_err(|e| Error::Operation(e.to_string()))?;
-        let tmp_path = crate_dir.join(format!(".tmp.{}.json", ver.key()));
-        fs::write(&tmp_path, s)?;
-        fs::rename(&tmp_path, &record_path)?;
+        write_file_durable(&record_path, s.as_bytes())?;
         Ok(true)
     }
 
@@ -273,6 +377,9 @@ impl Store {
             if entry.file_type()?.is_dir() {
                 for rec_entry in fs::read_dir(entry.path())? {
                     let rec_entry = rec_entry?;
+                    if !rec_entry.file_type()?.is_file() {
+                        continue;
+                    }
                     let path = rec_entry.path();
                     if path.extension().and_then(|s| s.to_str()) == Some("toml")
                         && !path.file_name().unwrap().to_string_lossy().starts_with(".tmp")
@@ -299,8 +406,12 @@ impl Store {
         for entry in fs::read_dir(&dir)? {
             let entry = entry?;
             if entry.file_type()?.is_dir() {
+                let crate_dir_name = entry.file_name().to_string_lossy().to_string();
                 for rec_entry in fs::read_dir(entry.path())? {
                     let rec_entry = rec_entry?;
+                    if !rec_entry.file_type()?.is_file() {
+                        continue;
+                    }
                     let path = rec_entry.path();
                     if path.extension().and_then(|s| s.to_str()) == Some("json")
                         && !path.file_name().unwrap().to_string_lossy().starts_with(".tmp")
@@ -309,6 +420,13 @@ impl Store {
                         let rec: UpstreamRecord = serde_json::from_str(&s).map_err(|e| {
                             Error::Integrity(format!("failed to parse upstream record {}: {e}", path.display()))
                         })?;
+                        if rec.name.to_lowercase() != crate_dir_name {
+                            return Err(Error::Integrity(format!(
+                                "upstream record {} in wrong directory {}",
+                                path.display(),
+                                crate_dir_name
+                            )));
+                        }
                         list.push(rec);
                     }
                 }
@@ -319,6 +437,7 @@ impl Store {
     }
 
     pub fn verify(&self) -> Result<()> {
+        self.recover_staging()?;
         let blobs = self.blobs_dir();
         if blobs.exists() {
             for entry in fs::read_dir(&blobs)? {
@@ -326,7 +445,7 @@ impl Store {
                 let path = entry.path();
                 if path.extension().and_then(|s| s.to_str()) == Some("crate") {
                     let fname = path.file_name().unwrap().to_string_lossy();
-                    if fname.starts_with(".tmp") {
+                    if fname.starts_with(".tmp") || !entry.file_type()?.is_file() {
                         continue;
                     }
                     let expected_sha = fname.trim_end_matches(".crate");

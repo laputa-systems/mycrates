@@ -1,3 +1,4 @@
+use crate::cli::{reject_unknown, take_value};
 use crate::error::{Error, Result};
 use crate::lockfile::{classify, parse_lockfile, PkgKind};
 use crate::pins::{write_pins, PinEntry, Pins};
@@ -6,6 +7,8 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+const USAGE: &str = "mycrates import-lock <Cargo.lock> [--project <name>] [--state-dir DIR]";
+
 pub fn run(args: &[String]) -> Result<()> {
     let mut state_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(".work/state");
     let mut lock_path: Option<PathBuf> = None;
@@ -13,17 +16,25 @@ pub fn run(args: &[String]) -> Result<()> {
 
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--state-dir" && i + 1 < args.len() {
-            state_dir = PathBuf::from(&args[i + 1]);
-            i += 2;
-        } else if args[i] == "--project" && i + 1 < args.len() {
-            project = Some(args[i + 1].clone());
-            i += 2;
-        } else if !args[i].starts_with('-') && lock_path.is_none() {
-            lock_path = Some(PathBuf::from(&args[i]));
-            i += 1;
-        } else {
-            i += 1;
+        match args[i].as_str() {
+            "--state-dir" => {
+                state_dir = PathBuf::from(take_value(args, &mut i, "--state-dir")?);
+                i += 1;
+            }
+            "--project" => {
+                project = Some(take_value(args, &mut i, "--project")?);
+                i += 1;
+            }
+            other if other.starts_with('-') => {
+                return reject_unknown(other, USAGE);
+            }
+            _ => {
+                if lock_path.is_some() {
+                    return reject_unknown(&args[i], USAGE);
+                }
+                lock_path = Some(PathBuf::from(&args[i]));
+                i += 1;
+            }
         }
     }
 

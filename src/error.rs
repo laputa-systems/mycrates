@@ -64,8 +64,8 @@ impl Error {
     }
 }
 
-impl From<lexopt::Error> for Error {
-    fn from(e: lexopt::Error) -> Self {
-        Error::Input(e.to_string())
+impl From<std::convert::Infallible> for Error {
+    fn from(_: std::convert::Infallible) -> Self {
+        Error::Operation("infallible".to_string())
     }
 }

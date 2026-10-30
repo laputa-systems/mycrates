@@ -89,8 +89,8 @@ pub fn fetch(state_dir: &Path, config: &Config) -> Result<FetchSummary> {
 
         let dl_url = client.expand_dl_url(&dl_template, &item.name, &item.version, &item.checksum)?;
 
-        let crate_bytes = client.download_crate(&dl_url, &item.checksum, &item.name, &item.version)?;
-        let byte_len = crate_bytes.len() as u64;
+        let staged = client.download_crate(&dl_url, &item.checksum, &item.name, &item.version)?;
+        let byte_len = staged.as_file().metadata().map(|m| m.len()).unwrap_or(0);
 
         if byte_len > bytes_budget {
             return Err(Error::Limit("fetch byte budget exceeded".to_string()));
@@ -98,7 +98,8 @@ pub fn fetch(state_dir: &Path, config: &Config) -> Result<FetchSummary> {
         bytes_budget -= byte_len;
         summary.total_bytes += byte_len;
 
-        let ingested_sha = store.ingest_blob(&crate_bytes[..])?;
+        let staged_path = staged.path().to_path_buf();
+        let ingested_sha = store.ingest_staged_file(&staged_path, &item.checksum)?;
         if ingested_sha != item.checksum {
             return Err(Error::Integrity("ingested checksum mismatch".to_string()));
         }

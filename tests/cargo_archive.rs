@@ -136,6 +136,178 @@ dependencies = [
 }
 
 #[test]
+fn real_workspace_with_dupes_and_targets_rejected_clearly() {
+    let dir = tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let store = Store::new(state_dir.clone());
+    store.ensure_dirs().unwrap();
+
+    let lock_content = r#"version = 3
+
+[[package]]
+name = "dup-dep"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[[package]]
+name = "dup-dep"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+[[package]]
+name = "workspace-root"
+version = "0.1.0"
+dependencies = [
+ "dup-dep 1.0.0",
+ "dup-dep 2.0.0",
+]
+"#;
+
+    let pins = Pins {
+        project: Some("real-workspace".to_string()),
+        lock_path: Some("Cargo.lock".to_string()),
+        lock_content: Some(lock_content.to_string()),
+        registry: vec![
+            PinEntry {
+                name: "dup-dep".to_string(),
+                version: "1.0.0".to_string(),
+                checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                source: "registry+https://github.com/rust-lang/crates.io-index".to_string(),
+            },
+            PinEntry {
+                name: "dup-dep".to_string(),
+                version: "2.0.0".to_string(),
+                checksum: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                source: "registry+https://github.com/rust-lang/crates.io-index".to_string(),
+            },
+        ],
+        unsupported: vec![],
+    };
+    let pins_path = store.pins_dir().join("real-workspace.toml");
+
+    let mut pins_for_validate = pins.clone();
+    for (i, pin) in pins.registry.iter().enumerate() {
+        let blob_bytes = format!("fake-blob-{}-{}", pin.name, pin.version);
+        let mut h = Sha256::new();
+        h.update(&blob_bytes);
+        pins_for_validate.registry[i].checksum = format!("{:x}", h.finalize_reset());
+    }
+    for pin in &pins_for_validate.registry {
+        let blob_bytes = format!("fake-blob-{}-{}", pin.name, pin.version);
+        std::fs::write(store.blobs_dir().join(format!("{}.crate", pin.checksum)), &blob_bytes).unwrap();
+        let rec = UpstreamRecord {
+            name: pin.name.clone(),
+            vers: pin.version.clone(),
+            checksum: pin.checksum.clone(),
+            raw_index_line: serde_json::json!({
+                "name": pin.name,
+                "vers": pin.version,
+                "deps": [],
+                "cksum": pin.checksum,
+                "features": {},
+                "yanked": false
+            })
+            .to_string(),
+            acquired_at: 1000,
+        };
+        store.put_upstream_record(&rec).unwrap();
+    }
+    let lock_content = lock_content
+        .replace(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            &pins_for_validate.registry[0].checksum,
+        )
+        .replace(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            &pins_for_validate.registry[1].checksum,
+        );
+    pins_for_validate.lock_content = Some(lock_content);
+    write_pins(&pins_path, &pins_for_validate).unwrap();
+    let err = validate_project(&state_dir, &pins_path, "http://127.0.0.1:9999/mirror/").unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("duplicate versions") || msg.contains("project directory"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn target_specific_workspace_rejected_clearly() {
+    let dir = tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let store = Store::new(state_dir.clone());
+    store.ensure_dirs().unwrap();
+
+    let lock_content = r#"version = 3
+
+[[package]]
+name = "workspace-root"
+version = "0.1.0"
+dependencies = [
+ "win-dep (target: cfg(windows))",
+]
+
+[[package]]
+name = "win-dep"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+"#;
+
+    let pins = Pins {
+        project: Some("target-workspace".to_string()),
+        lock_path: Some("Cargo.lock".to_string()),
+        lock_content: Some(lock_content.to_string()),
+        registry: vec![],
+        unsupported: vec![],
+    };
+    let pins_path = store.pins_dir().join("target-workspace.toml");
+
+    let mut pins_for_validate = pins.clone();
+    {
+        let blob_bytes = "fake-blob-win-dep-1.0.0";
+        let mut h = Sha256::new();
+        h.update(blob_bytes);
+        let real_sha = format!("{:x}", h.finalize_reset());
+        pins_for_validate.registry.push(PinEntry {
+            name: "win-dep".to_string(),
+            version: "1.0.0".to_string(),
+            checksum: real_sha.clone(),
+            source: "registry+https://github.com/rust-lang/crates.io-index".to_string(),
+        });
+        std::fs::write(store.blobs_dir().join(format!("{real_sha}.crate")), blob_bytes).unwrap();
+        let rec = UpstreamRecord {
+            name: "win-dep".to_string(),
+            vers: "1.0.0".to_string(),
+            checksum: real_sha.clone(),
+            raw_index_line: serde_json::json!({
+                "name": "win-dep",
+                "vers": "1.0.0",
+                "deps": [],
+                "cksum": real_sha,
+                "features": {},
+                "yanked": false
+            })
+            .to_string(),
+            acquired_at: 1000,
+        };
+        store.put_upstream_record(&rec).unwrap();
+    }
+    let lock_content = lock_content.replace(
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        &pins_for_validate.registry[0].checksum,
+    );
+    pins_for_validate.lock_content = Some(lock_content);
+    write_pins(&pins_path, &pins_for_validate).unwrap();
+
+    let err = validate_project(&state_dir, &pins_path, "http://127.0.0.1:9999/mirror/").unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("project directory"), "unexpected error: {msg}");
+}
+
+#[test]
 fn incomplete_archive_fails_naming_missing_package() {
     let dir = tempdir().unwrap();
     let state_dir = dir.path().join("state");

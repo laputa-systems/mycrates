@@ -1,12 +1,12 @@
 use crate::config::LimitsConfig;
-use crate::crate_file::{scan_crate, ScanLimits};
+use crate::crate_file::{parse_packaged_manifest, scan_crate_staged, ScanLimits};
 use crate::error::{Error, Result};
-use crate::index::publish_to_index;
+use crate::index::publish_to_index_with_manifest;
 use crate::publish::Publisher;
 use crate::store::{NativeRecord, Store};
 use crate::wire::decode_publish_payload;
 use sha2::{Digest, Sha256};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -116,6 +116,21 @@ pub fn handle_publish_request<R: Read>(
     let publisher = Publisher::new(&store, cfg.site_dir.clone(), cfg.public_base_url.clone());
 
     if method == "PUT" && path == "/api/v1/crates/new" {
+        if cfg.auth_required || cfg.token.is_some() {
+            if let Some(ref exp_token) = cfg.token {
+                let auth_hdr = headers
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+                    .map(|(_, v)| v.as_str());
+                if !verify_token(auth_hdr, exp_token) {
+                    send_error(stream, 401, "unauthorized");
+                    return Ok(());
+                }
+            } else {
+                send_error(stream, 401, "unauthorized");
+                return Ok(());
+            }
+        }
         let is_chunked = headers.iter().any(|(k, v)| {
             k.eq_ignore_ascii_case("transfer-encoding") && v.eq_ignore_ascii_case("chunked")
         });
@@ -142,7 +157,13 @@ pub fn handle_publish_request<R: Read>(
             return Ok(());
         }
 
-        let decoded = match decode_publish_payload(reader, content_len, cfg.limits.max_compressed) {
+        let staging_dir = store.blobs_dir();
+        let decoded = match decode_publish_payload(
+            reader,
+            content_len,
+            cfg.limits.max_compressed,
+            &staging_dir,
+        ) {
             Ok(d) => d,
             Err(Error::Limit(msg)) => {
                 send_error(stream, 413, &msg);
@@ -159,10 +180,21 @@ pub fn handle_publish_request<R: Read>(
             max_expanded: cfg.limits.max_expanded,
             max_entries: cfg.limits.max_entries,
             max_ratio: cfg.limits.max_ratio,
+            max_manifest_bytes: 1024 * 1024,
         };
 
-        let scan_res = match scan_crate(
-            &decoded.crate_bytes[..],
+        let staged_file = match decoded.open() {
+            Ok(f) => f,
+            Err(e) => {
+                send_error(stream, 400, &e.to_string());
+                return Ok(());
+            }
+        };
+        let scan_res = match scan_crate_staged(
+            staged_file,
+            decoded.crate_len,
+            cfg.limits.max_compressed,
+            Some(&decoded.crate_sha256),
             &decoded.body.name,
             &decoded.body.vers,
             &scan_limits,
@@ -180,7 +212,7 @@ pub fn handle_publish_request<R: Read>(
 
         let _guard = store.lock_exclusive()?;
 
-        let blob_sha = store.ingest_blob(&decoded.crate_bytes[..])?;
+        let blob_sha = store.ingest_staged_file(&decoded.crate_bytes_path, &decoded.crate_sha256)?;
         if blob_sha != scan_res.checksum {
             send_error(stream, 400, "checksum mismatch");
             return Ok(());
@@ -189,7 +221,8 @@ pub fn handle_publish_request<R: Read>(
         let mut body = decoded.body;
         body.checksum = blob_sha.clone();
 
-        let index_entry = match publish_to_index(&body) {
+        let packaged = parse_packaged_manifest(&scan_res.cargo_toml)?;
+        let index_entry = match publish_to_index_with_manifest(&body, Some(&packaged)) {
             Ok(entry) => entry,
             Err(e) => {
                 send_error(stream, 400, &e.to_string());
@@ -246,7 +279,10 @@ pub fn handle_publish_request<R: Read>(
             let _guard = store.lock_exclusive()?;
             match store.set_native_yank(crate_name, crate_version, is_yank) {
                 Ok(_) => {
-                    let _ = publisher.publish();
+                    if let Err(e) = publisher.publish() {
+                        send_error(stream, 500, &e.to_string());
+                        return Ok(());
+                    }
                     send_json_response(stream, 200, "OK", "{\"ok\":true}");
                     return Ok(());
                 }
@@ -276,19 +312,39 @@ pub fn handle_connection(stream: TcpStream, cfg: &ServeConfig) -> Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut header_bytes = Vec::new();
 
-    loop {
-        let mut line = Vec::new();
-        let n = reader.read_until(b'\n', &mut line)?;
-        if n == 0 {
-            return Ok(());
-        }
-        header_bytes.extend_from_slice(&line);
-        if header_bytes.ends_with(b"\r\n\r\n") || header_bytes.ends_with(b"\n\n") {
-            break;
-        }
-        if header_bytes.len() > 65536 {
-            send_error(&stream, 400, "headers too large");
-            return Ok(());
+    {
+        let mut chunk = [0u8; 1024];
+        let mut line_len: usize = 0;
+        loop {
+            let n = reader.read(&mut chunk)?;
+            if n == 0 {
+                return Ok(());
+            }
+            for &b in &chunk[..n] {
+                header_bytes.push(b);
+                line_len += 1;
+                if header_bytes.len() > 65536 + 4096 {
+                    send_error(&stream, 400, "headers too large");
+                    return Ok(());
+                }
+                if line_len > 8192 + 2 {
+                    send_error(&stream, 400, "header line too long");
+                    return Ok(());
+                }
+                if b == b'\n' {
+                    if header_bytes.ends_with(b"\r\n\r\n") || header_bytes.ends_with(b"\n\n") {
+                        break;
+                    }
+                    line_len = 0;
+                }
+            }
+            if header_bytes.ends_with(b"\r\n\r\n") || header_bytes.ends_with(b"\n\n") {
+                break;
+            }
+            if header_bytes.len() > 65536 {
+                send_error(&stream, 400, "headers too large");
+                return Ok(());
+            }
         }
     }
 

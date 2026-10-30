@@ -51,9 +51,6 @@ pub struct Version(SemVer);
 impl Version {
     pub fn new(s: &str) -> Result<Self> {
         let v = SemVer::parse(s).map_err(|e| Error::Input(e.to_string()))?;
-        if !v.build.is_empty() {
-            return Err(Error::Input("build metadata not allowed".to_string()));
-        }
         Ok(Version(v))
     }
 
@@ -67,6 +64,12 @@ impl Version {
 
     pub fn as_str(&self) -> String {
         self.0.to_string()
+    }
+
+    pub fn uniqueness_key(&self) -> String {
+        let mut v = self.0.clone();
+        v.build = semver::BuildMetadata::EMPTY;
+        v.to_string()
     }
 }
 

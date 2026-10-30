@@ -103,10 +103,43 @@ fn name_collision_detection() {
 }
 
 #[test]
-fn build_metadata_rejection() {
-    // Version::new already rejects build metadata per Decisions
-    assert!(Version::new("1.0.0+build1").is_err());
+fn build_metadata_accepted_with_uniqueness_key() {
+    assert!(Version::new("1.0.0+build1").is_ok());
+    assert!(Version::new("2.0.16+zstd.1.5.7").is_ok());
+    let v = Version::new("2.0.16+zstd.1.5.7").unwrap();
+    assert_eq!(v.uniqueness_key(), "2.0.16");
+    assert_eq!(v.as_str(), "2.0.16+zstd.1.5.7");
     assert!(Version::new("1.0.0").is_ok());
+}
+
+#[test]
+fn native_build_metadata_identity_conflict() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().to_path_buf());
+
+    let rec1 = NativeRecord {
+        name: "meta-pkg".to_string(),
+        vers: "1.0.7".to_string(),
+        checksum: "sha_a".to_string(),
+        yanked: false,
+        entry: sample_entry("meta-pkg", "1.0.7", "sha_a"),
+    };
+    assert!(store.put_native_record(&rec1).unwrap());
+
+    let rec2 = NativeRecord {
+        name: "meta-pkg".to_string(),
+        vers: "1.0.7+extra".to_string(),
+        checksum: "sha_b".to_string(),
+        yanked: false,
+        entry: sample_entry("meta-pkg", "1.0.7+extra", "sha_b"),
+    };
+    let err = store.put_native_record(&rec2).unwrap_err();
+    match err {
+        Error::Conflict(msg) => {
+            assert!(msg.contains("conflicts with existing"));
+        }
+        other => panic!("expected Conflict, got {other:?}"),
+    }
 }
 
 #[test]
@@ -171,6 +204,42 @@ fn stale_temp_cleanup() {
 
     store.recover_staging().unwrap();
     assert!(!tmp_file.exists());
+}
+
+#[test]
+fn mixed_case_lookup_and_collision() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().to_path_buf());
+
+    let data = b"case-data";
+    let sha = store.ingest_blob(Cursor::new(data)).unwrap();
+    let rec = NativeRecord {
+        name: "Foo_Bar".to_string(),
+        vers: "1.0.0".to_string(),
+        checksum: sha.clone(),
+        yanked: false,
+        entry: sample_entry("Foo_Bar", "1.0.0", &sha),
+    };
+    store.put_native_record(&rec).unwrap();
+
+    let dup = NativeRecord {
+        name: "foo-bar".to_string(),
+        vers: "2.0.0".to_string(),
+        checksum: sha.clone(),
+        yanked: false,
+        entry: sample_entry("foo-bar", "2.0.0", &sha),
+    };
+    let err = store.put_native_record(&dup).unwrap_err();
+    match err {
+        Error::Conflict(msg) => assert!(msg.contains("collision")),
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+
+    let recs = store.load_native_records().unwrap();
+    assert!(recs.iter().any(|r| r.name == "Foo_Bar"));
+
+    use mycrates::index::shard_for_name;
+    assert_eq!(shard_for_name(&"Foo_Bar".to_lowercase()), shard_for_name("foo_bar"));
 }
 
 #[test]

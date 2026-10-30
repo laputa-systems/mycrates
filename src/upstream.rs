@@ -1,11 +1,12 @@
 use crate::config::LimitsConfig;
-use crate::crate_file::{scan_crate, ScanLimits};
+use crate::crate_file::{scan_crate_staged, ScanLimits};
 use crate::error::{Error, Result};
 use crate::index::shard_for_name;
 use crate::model::IndexEntry;
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::time::Duration;
+use ureq::ResponseExt;
 
 #[derive(Clone)]
 pub struct UpstreamClient {
@@ -59,7 +60,7 @@ impl UpstreamClient {
         vers: &str,
         cksum: &str,
     ) -> Result<String> {
-        let shard = shard_for_name(name);
+        let shard = shard_for_name(&name.to_lowercase());
         let prefix = if let Some((p, _)) = shard.rsplit_once('/') {
             p
         } else {
@@ -67,10 +68,15 @@ impl UpstreamClient {
         };
         let lowerprefix = prefix.to_lowercase();
 
-        let mut tmpl = if dl_template.contains("{crate}") {
+        let mut tmpl = if dl_template.contains("{crate}")
+            || dl_template.contains("{version}")
+            || dl_template.contains("{prefix}")
+            || dl_template.contains("{lowerprefix}")
+            || dl_template.contains("{sha256-checksum}")
+        {
             dl_template.to_string()
         } else {
-            format!("{}/{}/{}-{}.crate", dl_template.trim_end_matches('/'), "{crate}", "{crate}", "{version}")
+            format!("{}/{{crate}}/{{version}}/download", dl_template.trim_end_matches('/'))
         };
 
         tmpl = tmpl.replace("{crate}", name);
@@ -88,7 +94,7 @@ impl UpstreamClient {
     }
 
     pub fn fetch_index_entry(&self, name: &str, vers: &str) -> Result<(String, IndexEntry)> {
-        let shard = shard_for_name(name);
+        let shard = shard_for_name(&name.to_lowercase());
         let url = format!("{}/{}", self.index_url.trim_end_matches('/'), shard);
         check_url_security(&url)?;
 
@@ -126,7 +132,7 @@ impl UpstreamClient {
         expected_checksum: &str,
         name: &str,
         vers: &str,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<tempfile::NamedTempFile> {
         check_url_security(dl_url)?;
 
         let resp = self
@@ -135,23 +141,29 @@ impl UpstreamClient {
             .call()
             .map_err(|e| Error::Network(format!("failed to download crate from {dl_url}: {e}")))?;
 
-        let mut reader = resp.into_body().into_reader();
-        let mut downloaded = Vec::new();
-        let mut hasher = Sha256::new();
-        let mut buf = [0u8; 8192];
+        validate_response_url(resp.get_uri(), dl_url)?;
 
-        loop {
-            let n = reader
-                .read(&mut buf)
-                .map_err(|e| Error::Network(format!("stream read error: {e}")))?;
-            if n == 0 {
-                break;
+        let mut spill = tempfile::NamedTempFile::new().map_err(|e| Error::Operation(e.to_string()))?;
+        let mut hasher = Sha256::new();
+        let mut counted: u64 = 0;
+        {
+            let mut reader = resp.into_body().into_reader();
+            let mut buf = [0u8; 65536];
+            loop {
+                let n = reader
+                    .read(&mut buf)
+                    .map_err(|e| Error::Network(format!("stream read error: {e}")))?;
+                if n == 0 {
+                    break;
+                }
+                counted += n as u64;
+                if counted > self.limits.max_compressed {
+                    return Err(Error::Limit("downloaded crate exceeds max_compressed limit".to_string()));
+                }
+                hasher.update(&buf[..n]);
+                std::io::Write::write_all(&mut spill, &buf[..n])
+                    .map_err(|e| Error::Operation(e.to_string()))?;
             }
-            if downloaded.len() as u64 + n as u64 > self.limits.max_compressed {
-                return Err(Error::Limit("downloaded crate exceeds max_compressed limit".to_string()));
-            }
-            hasher.update(&buf[..n]);
-            downloaded.extend_from_slice(&buf[..n]);
         }
 
         let actual_checksum = format!("{:x}", hasher.finalize_reset());
@@ -167,9 +179,22 @@ impl UpstreamClient {
             max_expanded: self.limits.max_expanded,
             max_entries: self.limits.max_entries,
             max_ratio: self.limits.max_ratio,
+            max_manifest_bytes: 1024 * 1024,
         };
 
-        let scan_res = scan_crate(&downloaded[..], name, vers, &scan_limits)?;
+        let staged: std::fs::File = spill
+            .as_file()
+            .try_clone()
+            .map_err(|e| Error::Operation(e.to_string()))?;
+        let scan_res = scan_crate_staged(
+            staged,
+            counted,
+            self.limits.max_compressed,
+            Some(expected_checksum),
+            name,
+            vers,
+            &scan_limits,
+        )?;
         if scan_res.checksum != expected_checksum {
             return Err(Error::Integrity(format!(
                 "scanned archive checksum mismatch for {} {}",
@@ -177,19 +202,36 @@ impl UpstreamClient {
             )));
         }
 
-        Ok(downloaded)
+        Ok(spill)
     }
 }
 
+fn validate_response_url(final_uri: &ureq::http::Uri, original: &str) -> Result<()> {
+    let s = final_uri.to_string();
+    check_url_security(&s).map_err(|_| {
+        Error::Network(format!("redirect target forbidden: {s} (from {original})"))
+    })
+}
+
 fn check_url_security(url: &str) -> Result<()> {
-    if url.starts_with("https://")
-        || url.starts_with("http://127.0.0.1")
-        || url.starts_with("http://localhost")
-    {
-        Ok(())
-    } else {
-        Err(Error::Input(format!(
+    let parsed: url::Url = url.parse().map_err(|_| {
+        Error::Input(format!("invalid URL (HTTPS required unless loopback): {url}"))
+    })?;
+    if parsed.username() != "" || parsed.password().is_some() {
+        return Err(Error::Input(format!(
+            "credentials in URL forbidden: {url}"
+        )));
+    }
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" => match parsed.host_str() {
+            Some("127.0.0.1") | Some("localhost") | Some("::1") | Some("[::1]") => Ok(()),
+            _ => Err(Error::Input(format!(
+                "insecure URL forbidden (HTTPS required unless loopback): {url}"
+            ))),
+        },
+        _ => Err(Error::Input(format!(
             "insecure URL forbidden (HTTPS required unless loopback): {url}"
-        )))
+        ))),
     }
 }

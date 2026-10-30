@@ -166,6 +166,60 @@ fn tampered_blob_rejected_before_switch() {
 }
 
 #[test]
+fn damaged_generation_repaired_on_republish() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().join("state"));
+    let site = dir.path().join("site");
+
+    let data = b"repair-payload";
+    let sha = store.ingest_blob(Cursor::new(data)).unwrap();
+    let rec = NativeRecord {
+        name: "repair-pkg".to_string(),
+        vers: "1.0.0".to_string(),
+        checksum: sha.clone(),
+        yanked: false,
+        entry: sample_entry("repair-pkg", "1.0.0", &sha),
+    };
+    store.put_native_record(&rec).unwrap();
+
+    let publ = Publisher::new(&store, site.clone(), "http://localhost:8080".to_string());
+    let res = publ.publish().unwrap();
+    assert!(!res.is_noop);
+
+    let gen_dir = site.join("generations").join(&res.generation_id);
+    let shard = mycrates::index::shard_for_name("repair-pkg");
+    let index_file = gen_dir.join("registry").join(&shard);
+    assert!(index_file.exists());
+
+    // 1. Delete the index file: republish must repair, not report no-op.
+    fs::remove_file(&index_file).unwrap();
+    let res2 = publ.publish().unwrap();
+    assert!(!res2.is_noop, "deleted index must force regeneration");
+    assert!(index_file.exists());
+
+    // 2. Replace a served blob: republish must fail, not serve the bad copy.
+    let blob_path = site.join("blobs").join(format!("{}.crate", sha));
+    assert!(blob_path.exists());
+    fs::write(&blob_path, b"replaced-by-attacker").unwrap();
+    let err = publ.publish().unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("served blob mismatch") || msg.contains("tampered blob"),
+        "unexpected error: {msg}"
+    );
+
+    // 3. Dangling current link: republish must repair to a valid generation.
+    let current = site.join("current");
+    let _ = fs::remove_file(&current);
+    std::os::unix::fs::symlink("generations/nonexistent_gen_repair", &current).unwrap();
+    fs::write(&blob_path, data).unwrap();
+    let res3 = publ.publish().unwrap();
+    assert!(!res3.is_noop, "dangling current must be repaired");
+    let target = fs::read_link(&current).unwrap();
+    assert!(site.join(&target).exists());
+}
+
+#[test]
 fn staging_recovery() {
     let dir = tempdir().unwrap();
     let store = Store::new(dir.path().join("state"));

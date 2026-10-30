@@ -127,6 +127,69 @@ fn configs() {
 }
 
 #[test]
+fn malformed_dependency_rejected() {
+    let mut body = base_body();
+    body.deps.push(Dependency {
+        name: Some("bad dep!".to_string()),
+        version_req: "1.0".to_string(),
+        features: vec![],
+        optional: false,
+        default_features: true,
+        target: None,
+        kind: None,
+        registry: None,
+        package: None,
+        explicit_name_in_toml: None,
+    });
+    assert!(publish_to_index(&body).is_err());
+
+    let mut body2 = base_body();
+    body2.deps.push(Dependency {
+        name: Some("good".to_string()),
+        version_req: "not-a-req!!!".to_string(),
+        features: vec![],
+        optional: false,
+        default_features: true,
+        target: None,
+        kind: None,
+        registry: None,
+        package: None,
+        explicit_name_in_toml: None,
+    });
+    assert!(publish_to_index(&body2).is_err());
+}
+
+#[test]
+fn manifest_reconciliation_rejects_divergence() {
+    use mycrates::crate_file::parse_packaged_manifest;
+    let packaged_src = "[package]\nname = \"foo\"\nversion = \"1.0.0\"\nlinks = \"native\"\nrust-version = \"1.70\"\n\n[features]\ndefault = []\n\n[dependencies]\nbar = \"1.0\"\n";
+    let packaged = parse_packaged_manifest(packaged_src).unwrap();
+
+    let mut diverged = base_body();
+    diverged.links = Some("other".to_string());
+    assert!(mycrates::index::publish_to_index_with_manifest(&diverged, Some(&packaged)).is_err());
+
+    let mut diverged2 = base_body();
+    diverged2.features.insert("extra".to_string(), vec!["x".to_string()]);
+    assert!(mycrates::index::publish_to_index_with_manifest(&diverged2, Some(&packaged)).is_err());
+
+    let mut diverged3 = base_body();
+    diverged3.deps.push(Dependency {
+        name: Some("other".to_string()),
+        version_req: "1.0".to_string(),
+        features: vec![],
+        optional: false,
+        default_features: true,
+        target: None,
+        kind: None,
+        registry: None,
+        package: None,
+        explicit_name_in_toml: None,
+    });
+    assert!(mycrates::index::publish_to_index_with_manifest(&diverged3, Some(&packaged)).is_err());
+}
+
+#[test]
 fn upstream_unknown_field_preserved() {
     // simulate upstream line with extra field
     let line = r#"{"name":"serde","vers":"1.0.0","deps":[],"cksum":"x","features":{},"yanked":false,"pubtime":12345}"#;

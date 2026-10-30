@@ -1,3 +1,4 @@
+use crate::cli::{reject_unknown, take_value};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::serve::{run_server, ServeConfig};
@@ -6,6 +7,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+
+const USAGE: &str = "mycrates serve-publish [--bind ADDR] [--token-file PATH] [--state-dir DIR] [--site-dir DIR] [--config PATH]";
 
 pub fn run(args: &[String]) -> Result<()> {
     let mut state_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(".work/state");
@@ -16,23 +19,31 @@ pub fn run(args: &[String]) -> Result<()> {
 
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--state-dir" && i + 1 < args.len() {
-            state_dir = PathBuf::from(&args[i + 1]);
-            i += 2;
-        } else if args[i] == "--site-dir" && i + 1 < args.len() {
-            site_dir = PathBuf::from(&args[i + 1]);
-            i += 2;
-        } else if args[i] == "--bind" && i + 1 < args.len() {
-            bind = args[i + 1].clone();
-            i += 2;
-        } else if args[i] == "--token-file" && i + 1 < args.len() {
-            token_file = Some(PathBuf::from(&args[i + 1]));
-            i += 2;
-        } else if args[i] == "--config" && i + 1 < args.len() {
-            cfg_path = Some(PathBuf::from(&args[i + 1]));
-            i += 2;
-        } else {
-            i += 1;
+        let flag = args[i].as_str();
+        match flag {
+            "--state-dir" => {
+                state_dir = PathBuf::from(take_value(args, &mut i, "--state-dir")?);
+                i += 1;
+            }
+            "--site-dir" => {
+                site_dir = PathBuf::from(take_value(args, &mut i, "--site-dir")?);
+                i += 1;
+            }
+            "--bind" => {
+                bind = take_value(args, &mut i, "--bind")?;
+                i += 1;
+            }
+            "--token-file" => {
+                token_file = Some(PathBuf::from(take_value(args, &mut i, "--token-file")?));
+                i += 1;
+            }
+            "--config" => {
+                cfg_path = Some(PathBuf::from(take_value(args, &mut i, "--config")?));
+                i += 1;
+            }
+            _ => {
+                return reject_unknown(&args[i], USAGE);
+            }
         }
     }
 
@@ -68,6 +79,12 @@ pub fn run(args: &[String]) -> Result<()> {
         public_base_url: config.public_base_url,
         limits: config.limits,
     };
+
+    if serve_cfg.token.as_ref().is_none_or(|t| t.is_empty()) {
+        return Err(Error::Input(
+            "refusing to serve the publish API without a token: set --token-file or MYCRATES_TOKEN".to_string(),
+        ));
+    }
 
     println!("listening on {}", bind);
     let stop = Arc::new(AtomicBool::new(false));

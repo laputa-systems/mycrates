@@ -1,24 +1,65 @@
 use crate::error::{Error, Result};
 use crate::model::PublishBody;
-use std::io::Read;
+use sha2::{Digest, Sha256};
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+static WIRE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
-pub struct DecodedPublishRequest {
+struct TmpCleanup(PathBuf);
+
+impl Drop for TmpCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn spill_path(dir: &Path) -> PathBuf {
+    let unique = format!(
+        ".upload.{}.{}.{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+        WIRE_COUNTER.fetch_add(1, Ordering::SeqCst)
+    );
+    dir.join(unique)
+}
+
+#[derive(Debug)]
+pub struct StagedUpload {
     pub body: PublishBody,
-    pub crate_bytes: Vec<u8>,
+    pub crate_bytes_path: PathBuf,
+    pub crate_len: u64,
+    pub crate_sha256: String,
+    _cleanup: TmpCleanup,
+}
+
+impl StagedUpload {
+    pub fn open(&self) -> Result<std::fs::File> {
+        std::fs::File::open(&self.crate_bytes_path).map_err(Error::from)
+    }
 }
 
 pub fn decode_publish_payload<R: Read>(
     mut reader: R,
     content_length: u64,
     max_compressed: u64,
-) -> Result<DecodedPublishRequest> {
+    staging_dir: &Path,
+) -> Result<StagedUpload> {
     if content_length < 8 {
         return Err(Error::Input("upload payload too short".to_string()));
     }
     if content_length > max_compressed + 10 * 1024 * 1024 {
         return Err(Error::Limit("upload payload exceeds size limit".to_string()));
     }
+
+    fs::create_dir_all(staging_dir)?;
 
     let mut json_len_buf = [0u8; 4];
     reader
@@ -57,10 +98,30 @@ pub fn decode_publish_payload<R: Read>(
         return Err(Error::Input("crate length does not match content length framing".to_string()));
     }
 
-    let mut crate_bytes = vec![0u8; crate_len as usize];
-    reader
-        .read_exact(&mut crate_bytes)
-        .map_err(|e| Error::Input(format!("failed to read crate bytes: {e}")))?;
+    let spill = spill_path(staging_dir);
+    let mut staged_file = OpenOptions::new().create_new(true).write(true).open(&spill)?;
+    let mut hasher = Sha256::new();
+    let mut remaining = crate_len;
+    let mut buf = vec![0u8; 65536];
+    while remaining > 0 {
+        let want = (remaining.min(buf.len() as u64)) as usize;
+        reader
+            .read_exact(&mut buf[..want])
+            .map_err(|e| Error::Input(format!("failed to read crate bytes: {e}")))?;
+        hasher.update(&buf[..want]);
+        staged_file
+            .write_all(&buf[..want])
+            .map_err(|e| Error::Operation(format!("failed to stage upload: {e}")))?;
+        remaining -= want as u64;
+    }
+    staged_file.sync_all()?;
+    let crate_sha256 = format!("{:x}", hasher.finalize_reset());
 
-    Ok(DecodedPublishRequest { body, crate_bytes })
+    Ok(StagedUpload {
+        body,
+        crate_bytes_path: spill.clone(),
+        crate_len,
+        crate_sha256,
+        _cleanup: TmpCleanup(spill),
+    })
 }
