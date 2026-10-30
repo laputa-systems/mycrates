@@ -69,11 +69,24 @@ fn send_json_response(mut stream: &TcpStream, status: u16, reason: &str, body_js
     let _ = stream.flush();
 }
 
+fn json_escape_into(out: &mut String, s: &str) {
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+}
+
 fn send_error(stream: &TcpStream, status: u16, detail: &str) {
-    let body = serde_json::json!({
-        "errors": [{ "detail": detail }]
-    })
-    .to_string();
+    let mut body = String::from("{\"errors\":[{\"detail\":\"");
+    json_escape_into(&mut body, detail);
+    body.push_str("\"}]}");
     let reason = match status {
         400 => "Bad Request",
         401 => "Unauthorized",
@@ -255,15 +268,8 @@ pub fn handle_publish_request<R: Read>(
             return Ok(());
         }
 
-        let resp_json = serde_json::json!({
-            "warnings": {
-                "invalid_categories": [],
-                "invalid_badges": [],
-                "other": []
-            }
-        })
-        .to_string();
-        send_json_response(stream, 200, "OK", &resp_json);
+        let resp_json = "{\"warnings\":{\"invalid_categories\":[],\"invalid_badges\":[],\"other\":[]}}";
+        send_json_response(stream, 200, "OK", resp_json);
         return Ok(());
     }
 

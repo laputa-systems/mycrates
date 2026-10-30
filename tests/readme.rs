@@ -194,15 +194,15 @@ fn execute_readme_verified_blocks() {
                 "application/json",
             )
         } else if path.ends_with("/sample-pkg") {
-            let line = serde_json::json!({
+            let line = deser_json::to_string(&deser_value::value!({
                 "name": "sample-pkg",
                 "vers": "0.1.0",
                 "deps": [],
-                "cksum": cksum_clone,
+                "cksum": cksum_clone.clone(),
                 "features": {},
                 "yanked": false
-            })
-            .to_string();
+            }))
+            .unwrap();
             (200, format!("{line}\n").into_bytes(), "text/plain")
         } else if path.ends_with(".crate") {
             (200, crate_bytes_clone.clone(), "application/x-tar")
@@ -281,12 +281,15 @@ dependencies = [
                 _site_server = Some(s_server);
 
                 let cfg_file = state_dir.join("config.json");
-                let mut cfg: serde_json::Value =
-                    serde_json::from_str(&fs::read_to_string(&cfg_file).unwrap()).unwrap();
+                let mut cfg: deser_value::Value =
+                    deser_json::from_str(&fs::read_to_string(&cfg_file).unwrap()).unwrap();
                 cfg["upstream"]["index_url"] =
-                    serde_json::Value::String(format!("http://127.0.0.1:{}", upstream.port));
-                cfg["public_base_url"] = serde_json::Value::String(site_url);
-                fs::write(&cfg_file, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+                    deser_value::value!((format!("http://127.0.0.1:{}", upstream.port)));
+                cfg["public_base_url"] = deser_value::value!(site_url);
+                let pretty = deser_json::SerializerConfig::builder()
+                    .pretty(deser_json::Indent::Spaces(2))
+                    .build();
+                fs::write(&cfg_file, pretty.to_string(&cfg).unwrap()).unwrap();
             }
         }
     }

@@ -28,7 +28,7 @@ pub fn plan(state_dir: &Path) -> Result<Vec<PlanItem>> {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("toml") {
             let content = fs::read_to_string(&path)?;
-            let pins: Pins = toml::from_str(&content)
+            let pins: Pins = crate::toml::from_str(&content)
                 .map_err(|e| Error::Input(format!("failed to parse {}: {e}", path.display())))?;
             for pin in pins.registry {
                 let rec_path = store

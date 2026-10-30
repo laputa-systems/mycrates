@@ -54,7 +54,7 @@ fn serve_framing_and_auth() {
     );
 
     let crate_bytes = make_test_crate("my-srv-pkg", "1.0.0");
-    let json = serde_json::json!({
+    let json = deser_json::to_string(&deser_value::value!({
         "name": "my-srv-pkg",
         "vers": "1.0.0",
         "deps": [],
@@ -71,8 +71,8 @@ fn serve_framing_and_auth() {
         "repository": null,
         "badges": {},
         "links": null
-    })
-    .to_string();
+    }))
+    .unwrap();
     let payload = build_wire_payload(&json, &crate_bytes);
 
     // 1. Missing auth token -> 401

@@ -79,7 +79,7 @@ pub fn decode_publish_payload<R: Read>(
         .read_exact(&mut json_buf)
         .map_err(|e| Error::Input(format!("failed to read json body: {e}")))?;
 
-    let body: PublishBody = serde_json::from_slice(&json_buf)
+    let body: PublishBody = crate::json::from_slice(&json_buf)
         .map_err(|e| Error::Input(format!("invalid publish json: {e}")))?;
 
     let mut crate_len_buf = [0u8; 4];

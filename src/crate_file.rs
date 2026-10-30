@@ -197,7 +197,8 @@ fn dep_table_entry_kind(kind: Option<&str>) -> Result<Option<String>> {
 }
 
 pub fn parse_packaged_manifest(manifest: &str) -> Result<PackagedManifest> {
-    let parsed: toml::Value = toml::from_str(manifest).map_err(|e| Error::Integrity(e.to_string()))?;
+    let parsed: deser_value::Value =
+        deser_toml::from_str(manifest).map_err(|e| Error::Integrity(e.to_string()))?;
     let pkg = parsed
         .get("package")
         .ok_or_else(|| Error::Integrity("missing package in Cargo.toml".to_string()))?;
@@ -218,19 +219,20 @@ pub fn parse_packaged_manifest(manifest: &str) -> Result<PackagedManifest> {
         .map(|s| s.to_string());
 
     let mut features = std::collections::BTreeMap::new();
-    if let Some(feats) = parsed.get("features").and_then(|v| v.as_table()) {
-        for (k, v) in feats {
+    if let Some(feats) = parsed.get("features").and_then(|v| v.as_map()) {
+        for (k, v) in feats.iter() {
+            let k = k.as_str().ok_or_else(|| Error::Integrity("feature key is not a string".to_string()))?;
             let arr = v
-                .as_array()
+                .as_seq()
                 .ok_or_else(|| Error::Integrity(format!("feature '{k}' is not an array")))?;
             let mut vals = Vec::new();
-            for item in arr {
+            for item in arr.iter() {
                 let s = item
                     .as_str()
                     .ok_or_else(|| Error::Integrity(format!("feature '{k}' has non-string entry")))?;
                 vals.push(s.to_string());
             }
-            features.insert(k.clone(), vals);
+            features.insert(k.to_string(), vals);
         }
     }
 
@@ -238,16 +240,18 @@ pub fn parse_packaged_manifest(manifest: &str) -> Result<PackagedManifest> {
     collect_dep_table(&parsed, "dependencies", None, &mut dependencies)?;
     collect_dep_table(&parsed, "dev-dependencies", Some("dev"), &mut dependencies)?;
     collect_dep_table(&parsed, "build-dependencies", Some("build"), &mut dependencies)?;
-    if let Some(target) = parsed.get("target").and_then(|v| v.as_table()) {
-        for (target_spec, target_table) in target {
-            let t = Some(target_spec.clone());
+    if let Some(target) = parsed.get("target").and_then(|v| v.as_map()) {
+        for (target_key, target_table) in target.iter() {
+            let target_spec = target_key.as_str().ok_or_else(|| Error::Integrity("target key is not a string".to_string()))?.to_string();
+            let t = Some(target_spec);
             collect_dep_table_scoped(target_table, "dependencies", None, &t, &mut dependencies)?;
             collect_dep_table_scoped(target_table, "dev-dependencies", Some("dev"), &t, &mut dependencies)?;
             collect_dep_table_scoped(target_table, "build-dependencies", Some("build"), &t, &mut dependencies)?;
             let target_obj = target_table
-                .as_table()
+                .as_map()
                 .ok_or_else(|| Error::Integrity("target entry is not a table".to_string()))?;
-            for (section, _) in target_obj {
+            for (section_key, _) in target_obj.iter() {
+                let section = section_key.as_str().ok_or_else(|| Error::Integrity("target section key is not a string".to_string()))?;
                 if section != "dependencies" && section != "dev-dependencies" && section != "build-dependencies" {
                     return Err(Error::Integrity(format!("unknown target section '{section}'")));
                 }
@@ -266,7 +270,7 @@ pub fn parse_packaged_manifest(manifest: &str) -> Result<PackagedManifest> {
 }
 
 fn collect_dep_table(
-    manifest: &toml::Value,
+    manifest: &deser_value::Value,
     section: &str,
     forced_kind: Option<&str>,
     out: &mut Vec<PackagedDep>,
@@ -275,16 +279,17 @@ fn collect_dep_table(
         return Ok(());
     };
     let table = table
-        .as_table()
+        .as_map()
         .ok_or_else(|| Error::Integrity(format!("'{section}' is not a table")))?;
-    for (alias, spec) in table {
+    for (alias_key, spec) in table.iter() {
+        let alias = alias_key.as_str().ok_or_else(|| Error::Integrity("dependency alias is not a string".to_string()))?;
         out.push(parse_dep_spec(alias, spec, forced_kind, None)?);
     }
     Ok(())
 }
 
 fn collect_dep_table_scoped(
-    target_table: &toml::Value,
+    target_table: &deser_value::Value,
     section: &str,
     forced_kind: Option<&str>,
     target: &Option<String>,
@@ -294,9 +299,10 @@ fn collect_dep_table_scoped(
         return Ok(());
     };
     let table = table
-        .as_table()
+        .as_map()
         .ok_or_else(|| Error::Integrity(format!("'target.{section}' is not a table")))?;
-    for (alias, spec) in table {
+    for (alias_key, spec) in table.iter() {
+        let alias = alias_key.as_str().ok_or_else(|| Error::Integrity("dependency alias is not a string".to_string()))?;
         out.push(parse_dep_spec(alias, spec, forced_kind, target.clone())?);
     }
     Ok(())
@@ -304,17 +310,17 @@ fn collect_dep_table_scoped(
 
 fn parse_dep_spec(
     alias: &str,
-    spec: &toml::Value,
+    spec: &deser_value::Value,
     forced_kind: Option<&str>,
     target: Option<String>,
 ) -> Result<PackagedDep> {
-    let (version_req, table) = match spec {
-        toml::Value::String(v) => (v.clone(), None),
-        toml::Value::Table(t) => {
-            let v = t.get("version").and_then(|x| x.as_str()).unwrap_or("*").to_string();
-            (v, Some(t))
-        }
-        _ => return Err(Error::Integrity(format!("dependency '{alias}' has invalid spec"))),
+    let (version_req, table) = if let Some(v) = spec.as_str() {
+        (v.to_string(), None)
+    } else if let Some(t) = spec.as_map() {
+        let v = t.get("version").and_then(|x| x.as_str()).unwrap_or("*").to_string();
+        (v, Some(t))
+    } else {
+        return Err(Error::Integrity(format!("dependency '{alias}' has invalid spec")));
     };
     let mut package = None;
     let mut features = Vec::new();
@@ -326,8 +332,8 @@ fn parse_dep_spec(
         if let Some(p) = t.get("package").and_then(|x| x.as_str()) {
             package = Some(p.to_string());
         }
-        if let Some(f) = t.get("features").and_then(|x| x.as_array()) {
-            for item in f {
+        if let Some(f) = t.get("features").and_then(|x| x.as_seq()) {
+            for item in f.iter() {
                 features.push(
                     item.as_str()
                         .ok_or_else(|| Error::Integrity(format!("dependency '{alias}' has non-string feature")))?
@@ -362,7 +368,7 @@ fn parse_dep_spec(
             return Err(Error::Integrity(format!("dependency '{alias}' uses git/path source")));
         }
     }
-    if version_req != "*" && semver::VersionReq::parse(&version_req).is_err() {
+    if version_req != "*" && crate::version::VersionReq::parse(&version_req).is_err() {
         return Err(Error::Integrity(format!(
             "dependency '{alias}' has invalid version_req '{version_req}'"
         )));
@@ -380,8 +386,9 @@ fn parse_dep_spec(
     })
 }
 
-pub fn assert_manifest_parity(manifest: &str, name: &str, version: &str) -> Result<toml::Value> {
-    let parsed: toml::Value = toml::from_str(manifest).map_err(|e| Error::Integrity(e.to_string()))?;
+pub fn assert_manifest_parity(manifest: &str, name: &str, version: &str) -> Result<deser_value::Value> {
+    let parsed: deser_value::Value =
+        deser_toml::from_str(manifest).map_err(|e| Error::Integrity(e.to_string()))?;
     match parsed.get("package") {
         Some(pkg) => {
             let pkg_name = pkg.get("name").and_then(|v| v.as_str());

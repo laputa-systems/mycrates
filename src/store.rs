@@ -23,7 +23,7 @@ pub struct Store {
     pub state_dir: PathBuf,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, deser::Serialize, deser::Deserialize)]
 pub struct NativeRecord {
     pub name: String,
     pub vers: String,
@@ -32,7 +32,7 @@ pub struct NativeRecord {
     pub entry: IndexEntry,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, deser::Serialize, deser::Deserialize)]
 pub struct UpstreamRecord {
     pub name: String,
     pub vers: String,
@@ -282,7 +282,7 @@ impl Store {
                 .is_some_and(|stem| stem != ver.key())
             {
                 let existing_data = fs::read_to_string(&existing_path)?;
-                let existing: NativeRecord = toml::from_str(&existing_data)
+                let existing: NativeRecord = crate::toml::from_str(&existing_data)
                     .map_err(|e| Error::Integrity(format!("invalid native record {}: {e}", existing_path.display())))?;
                 if let Ok(existing_ver) = Version::new(&existing.vers)
                     && existing_ver.uniqueness_key() == uniq
@@ -298,7 +298,7 @@ impl Store {
         let record_path = crate_dir.join(format!("{}.toml", ver.key()));
         if record_path.exists() {
             let existing_data = fs::read_to_string(&record_path)?;
-            let existing: NativeRecord = toml::from_str(&existing_data)
+            let existing: NativeRecord = crate::toml::from_str(&existing_data)
                 .map_err(|e| Error::Integrity(format!("invalid native record {}: {e}", record_path.display())))?;
             if existing.checksum == record.checksum {
                 return Ok(false);
@@ -310,7 +310,7 @@ impl Store {
             }
         }
 
-        let s = toml::to_string_pretty(record).map_err(|e| Error::Operation(e.to_string()))?;
+        let s = crate::toml::to_string(record).map_err(|e| Error::Operation(e.to_string()))?;
         write_file_durable(&record_path, s.as_bytes())?;
         Ok(true)
     }
@@ -326,10 +326,10 @@ impl Store {
             return Err(Error::Input(format!("crate {} version {} not found", name, vers)));
         }
         let data = fs::read_to_string(&record_path)?;
-        let mut record: NativeRecord = toml::from_str(&data)?;
+        let mut record: NativeRecord = crate::toml::from_str(&data)?;
         record.yanked = yanked;
         record.entry.yanked = yanked;
-        let s = toml::to_string_pretty(&record).map_err(|e| Error::Operation(e.to_string()))?;
+        let s = crate::toml::to_string(&record).map_err(|e| Error::Operation(e.to_string()))?;
         write_file_durable(&record_path, s.as_bytes())?;
         Ok(())
     }
@@ -352,7 +352,7 @@ impl Store {
                 .is_some_and(|stem| stem != ver.key())
             {
                 let existing_data = fs::read_to_string(&existing_path)?;
-                let existing: UpstreamRecord = serde_json::from_str(&existing_data)
+                let existing: UpstreamRecord = crate::json::from_str(&existing_data)
                     .map_err(|e| Error::Integrity(format!("invalid upstream record {}: {e}", existing_path.display())))?;
                 if let Ok(existing_ver) = Version::new(&existing.vers)
                     && existing_ver.uniqueness_key() == uniq
@@ -368,7 +368,7 @@ impl Store {
         let record_path = crate_dir.join(format!("{}.json", ver.key()));
         if record_path.exists() {
             let existing_data = fs::read_to_string(&record_path)?;
-            let existing: UpstreamRecord = serde_json::from_str(&existing_data)
+            let existing: UpstreamRecord = crate::json::from_str(&existing_data)
                 .map_err(|e| Error::Integrity(format!("invalid upstream record {}: {e}", record_path.display())))?;
             if existing.checksum == record.checksum {
                 return Ok(false);
@@ -380,7 +380,7 @@ impl Store {
             }
         }
 
-        let s = serde_json::to_string_pretty(record).map_err(|e| Error::Operation(e.to_string()))?;
+        let s = crate::json::to_string_pretty(record).map_err(|e| Error::Operation(e.to_string()))?;
         write_file_durable(&record_path, s.as_bytes())?;
         Ok(true)
     }
@@ -404,7 +404,7 @@ impl Store {
                         && !path.file_name().unwrap().to_string_lossy().starts_with(".tmp")
                     {
                         let s = fs::read_to_string(&path)?;
-                        let rec: NativeRecord = toml::from_str(&s).map_err(|e| {
+                        let rec: NativeRecord = crate::toml::from_str(&s).map_err(|e| {
                             Error::Integrity(format!("failed to parse native record {}: {e}", path.display()))
                         })?;
                         list.push(rec);
@@ -436,7 +436,7 @@ impl Store {
                         && !path.file_name().unwrap().to_string_lossy().starts_with(".tmp")
                     {
                         let s = fs::read_to_string(&path)?;
-                        let rec: UpstreamRecord = serde_json::from_str(&s).map_err(|e| {
+                        let rec: UpstreamRecord = crate::json::from_str(&s).map_err(|e| {
                             Error::Integrity(format!("failed to parse upstream record {}: {e}", path.display()))
                         })?;
                         if rec.name.to_lowercase() != crate_dir_name {
@@ -537,11 +537,11 @@ fn canonical_names_in(crate_dir: &Path) -> Result<Option<Vec<String>>> {
         }
         let data = fs::read_to_string(&path)?;
         let name_opt = if ext == "toml" {
-            toml::from_str::<toml::Value>(&data)
+            crate::toml::value_from_str(&data)
                 .ok()
                 .and_then(|v| v.get("name")?.as_str().map(|s| s.to_string()))
         } else {
-            serde_json::from_str::<serde_json::Value>(&data)
+            crate::json::value_from_str(&data)
                 .ok()
                 .and_then(|v| v.get("name")?.as_str().map(|s| s.to_string()))
         };

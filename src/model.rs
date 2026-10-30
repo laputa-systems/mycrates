@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
-use semver::Version as SemVer;
-use serde::{Deserialize, Serialize};
+use crate::version::Version as InnerVersion;
+use deser::{Deserialize, Serialize};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -46,16 +46,12 @@ impl fmt::Display for CrateName {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Version(SemVer);
+pub struct Version(InnerVersion);
 
 impl Version {
     pub fn new(s: &str) -> Result<Self> {
-        let v = SemVer::parse(s).map_err(|e| Error::Input(e.to_string()))?;
+        let v = InnerVersion::parse(s)?;
         Ok(Version(v))
-    }
-
-    pub fn semver(&self) -> &SemVer {
-        &self.0
     }
 
     pub fn key(&self) -> String {
@@ -67,9 +63,7 @@ impl Version {
     }
 
     pub fn uniqueness_key(&self) -> String {
-        let mut v = self.0.clone();
-        v.build = semver::BuildMetadata::EMPTY;
-        v.to_string()
+        self.0.uniqueness_key()
     }
 }
 
@@ -80,27 +74,27 @@ impl fmt::Display for Version {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[deser(rename_all = "snake_case")]
 pub struct Dependency {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub name: Option<String>,
-    #[serde(default)]
+    #[deser(default)]
     pub version_req: String,
-    #[serde(default)]
+    #[deser(default)]
     pub features: Vec<String>,
-    #[serde(default)]
+    #[deser(default)]
     pub optional: bool,
-    #[serde(default)]
+    #[deser(default)]
     pub default_features: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub target: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub kind: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub registry: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub package: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub explicit_name_in_toml: Option<String>,
 }
 
@@ -109,83 +103,83 @@ pub struct PublishBody {
     pub name: String,
     pub vers: String,
     pub deps: Vec<Dependency>,
-    #[serde(default)]
+    #[deser(default)]
     pub features: std::collections::BTreeMap<String, Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub authors: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub documentation: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub homepage: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub keywords: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub license: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub license_file: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub readme: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub readme_file: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub repository: Option<String>,
-    #[serde(default)]
+    #[deser(default)]
     pub badges: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub links: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub rust_version: Option<String>,
-    #[serde(default)]
+    #[deser(default)]
     pub checksum: String,
-    #[serde(default)]
+    #[deser(default)]
     pub yanked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexEntry {
-    #[serde(default)]
+    #[deser(default)]
     pub name: String,
-    #[serde(default)]
+    #[deser(default)]
     pub vers: String,
-    #[serde(default)]
+    #[deser(default)]
     pub deps: Vec<IndexDep>,
-    #[serde(default)]
+    #[deser(default)]
     pub cksum: String,
-    #[serde(default)]
+    #[deser(default)]
     pub features: std::collections::BTreeMap<String, Vec<String>>,
-    #[serde(default)]
+    #[deser(default)]
     pub yanked: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub links: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub rust_version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub v: Option<u32>,
-    #[serde(flatten)]
-    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
+    #[deser(flatten)]
+    pub extra: std::collections::BTreeMap<String, deser_value::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexDep {
-    #[serde(default)]
+    #[deser(default)]
     pub name: String,
-    #[serde(default)]
+    #[deser(default)]
     pub req: String,
-    #[serde(default)]
+    #[deser(default)]
     pub features: Vec<String>,
-    #[serde(default)]
+    #[deser(default)]
     pub optional: bool,
-    #[serde(default)]
+    #[deser(default)]
     pub default_features: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub target: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub kind: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub registry: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deser(default, skip_serializing_if = Option::is_none)]
     pub package: Option<String>,
 }
 

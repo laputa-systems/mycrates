@@ -193,18 +193,8 @@ fn manifest_reconciliation_rejects_divergence() {
 fn upstream_unknown_field_preserved() {
     // simulate upstream line with extra field
     let line = r#"{"name":"serde","vers":"1.0.0","deps":[],"cksum":"x","features":{},"yanked":false,"pubtime":12345}"#;
-    let mut val: serde_json::Value = serde_json::from_str(line).unwrap();
-    // roundtrip preserving extra
-    let mut extra = BTreeMap::new();
-    if let serde_json::Value::Object(ref mut map) = val
-        && let Some(p) = map.remove("pubtime")
-    {
-        extra.insert("pubtime".to_string(), p);
-    }
-    let obj = val.as_object().unwrap();
-    let mut out = serde_json::Map::new();
-    for (k,v) in obj { out.insert(k.clone(), v.clone()); }
-    for (k,v) in extra { out.insert(k,v); }
-    let s = serde_json::to_string(&out).unwrap();
+    let entry: mycrates::model::IndexEntry = deser_json::from_str(line).unwrap();
+    assert!(entry.extra.contains_key("pubtime"));
+    let s = serialize_index_line(&entry).unwrap();
     assert!(s.contains("pubtime"));
 }

@@ -1,10 +1,10 @@
 use crate::error::{Error, Result};
-use serde::{Deserialize, Serialize};
+use deser::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[deser(default)]
 pub struct UpstreamConfig {
     pub index_url: String,
 }
@@ -18,7 +18,7 @@ impl Default for UpstreamConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[deser(default)]
 pub struct LimitsConfig {
     pub max_compressed: u64,
     pub max_expanded: u64,
@@ -48,7 +48,7 @@ impl Default for LimitsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[deser(default)]
 pub struct Config {
     pub version: u32,
     pub public_base_url: String,
@@ -77,7 +77,7 @@ impl Config {
             return Ok(cfg);
         }
         let s = fs::read_to_string(path).map_err(|e| Error::Operation(e.to_string()))?;
-        let cfg: Config = serde_json::from_str(&s).map_err(|e| Error::Input(e.to_string()))?;
+        let cfg: Config = crate::json::from_str(&s).map_err(|e| Error::Input(e.to_string()))?;
         if cfg.version != 1 {
             return Err(Error::Input(format!("unsupported config version {}", cfg.version)));
         }
@@ -88,7 +88,7 @@ impl Config {
         if let Some(p) = path.parent() {
             fs::create_dir_all(p).map_err(|e| Error::Operation(e.to_string()))?;
         }
-        let s = serde_json::to_string_pretty(self).map_err(|e| Error::Operation(e.to_string()))?;
+        let s = crate::json::to_string_pretty(self).map_err(|e| Error::Operation(e.to_string()))?;
         fs::write(path, s).map_err(|e| Error::Operation(e.to_string()))?;
         Ok(())
     }

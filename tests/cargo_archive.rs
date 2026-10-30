@@ -55,20 +55,20 @@ fn seed_upstream(
     name: &str,
     vers: &str,
     cargo_extra: &str,
-    index_deps: serde_json::Value,
+    index_deps: deser_value::Value,
 ) -> String {
     let (bytes, sha) = make_crate_bytes(name, vers, cargo_extra);
     let ingested = store.ingest_blob(&bytes[..]).unwrap();
     assert_eq!(ingested, sha);
-    let line = serde_json::json!({
+    let line = deser_json::to_string(&deser_value::value!({
         "name": name,
         "vers": vers,
         "deps": index_deps,
         "cksum": sha.clone(),
         "features": {},
         "yanked": false
-    })
-    .to_string();
+    }))
+    .unwrap();
     let rec = UpstreamRecord {
         name: name.to_string(),
         vers: vers.to_string(),
@@ -97,7 +97,7 @@ fn archive_via_real_project_unchanged_lock() {
     let server = TestServer::start(state_dir.clone(), site_dir.clone(), "", None, false);
 
     let store = Store::new(state_dir.clone());
-    let cksum = seed_upstream(&store, "archived-dep", "0.1.0", "", serde_json::json!([]));
+    let cksum = seed_upstream(&store, "archived-dep", "0.1.0", "", deser_value::value!([]));
     Publisher::new(&store, site_dir.clone(), server.base_url())
         .publish()
         .unwrap();
@@ -171,15 +171,15 @@ fn missing_project_dir_fails_clearly() {
         name: "some-dep".to_string(),
         vers: "1.0.0".to_string(),
         checksum: sha.clone(),
-        raw_index_line: serde_json::json!({
+        raw_index_line: deser_json::to_string(&deser_value::value!({
             "name": "some-dep",
             "vers": "1.0.0",
             "deps": [],
             "cksum": sha,
             "features": {},
             "yanked": false
-        })
-        .to_string(),
+        }))
+        .unwrap(),
         acquired_at: 1000,
     };
     store.put_upstream_record(&rec).unwrap();
@@ -217,24 +217,24 @@ fn real_workspace_with_transitive_dupes_and_targets() {
     let server = TestServer::start(state_dir.clone(), site_dir.clone(), "", None, false);
     let store = Store::new(state_dir.clone());
 
-    seed_upstream(&store, "dup-dep", "1.0.0", "", serde_json::json!([]));
-    seed_upstream(&store, "dup-dep", "2.0.0", "", serde_json::json!([]));
+    seed_upstream(&store, "dup-dep", "1.0.0", "", deser_value::value!([]));
+    seed_upstream(&store, "dup-dep", "2.0.0", "", deser_value::value!([]));
     seed_upstream(
         &store,
         "mid-a",
         "1.0.0",
         "[dependencies]\ndup-dep = \"=1.0.0\"\n",
-        serde_json::json!([{"name": "dup-dep", "req": "=1.0.0", "features": [], "optional": false, "default_features": true}]),
+        deser_value::value!([{"name": "dup-dep", "req": "=1.0.0", "features": [], "optional": false, "default_features": true}]),
     );
     seed_upstream(
         &store,
         "mid-b",
         "1.0.0",
         "[dependencies]\ndup-dep = \"=2.0.0\"\n",
-        serde_json::json!([{"name": "dup-dep", "req": "=2.0.0", "features": [], "optional": false, "default_features": true}]),
+        deser_value::value!([{"name": "dup-dep", "req": "=2.0.0", "features": [], "optional": false, "default_features": true}]),
     );
-    seed_upstream(&store, "win-dep", "1.0.0", "", serde_json::json!([]));
-    seed_upstream(&store, "trans-leaf", "0.5.0", "", serde_json::json!([]));
+    seed_upstream(&store, "win-dep", "1.0.0", "", deser_value::value!([]));
+    seed_upstream(&store, "trans-leaf", "0.5.0", "", deser_value::value!([]));
     Publisher::new(&store, site_dir.clone(), server.base_url())
         .publish()
         .unwrap();

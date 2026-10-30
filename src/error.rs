@@ -31,20 +31,8 @@ impl From<io::Error> for Error {
     }
 }
 
-impl From<serde_json::Error> for Error {
-    fn from(e: serde_json::Error) -> Self {
-        Error::Input(e.to_string())
-    }
-}
-
-impl From<toml::de::Error> for Error {
-    fn from(e: toml::de::Error) -> Self {
-        Error::Input(e.to_string())
-    }
-}
-
-impl From<semver::Error> for Error {
-    fn from(e: semver::Error) -> Self {
+impl From<deser::Error> for Error {
+    fn from(e: deser::Error) -> Self {
         Error::Input(e.to_string())
     }
 }

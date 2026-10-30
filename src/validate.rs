@@ -18,7 +18,7 @@ pub struct ValidationResult {
 pub fn validate_archive(state_dir: &Path, pins_path: &Path) -> Result<ValidationResult> {
     let store = Store::new(state_dir.to_path_buf());
     let content = fs::read_to_string(pins_path)?;
-    let pins: Pins = toml::from_str(&content)
+    let pins: Pins = crate::toml::from_str(&content)
         .map_err(|e| Error::Input(format!("failed to parse pins {}: {e}", pins_path.display())))?;
 
     let project_name = pins
@@ -43,7 +43,7 @@ pub fn validate_archive(state_dir: &Path, pins_path: &Path) -> Result<Validation
         }
 
         let rec_data = fs::read_to_string(&rec_path)?;
-        let rec: crate::store::UpstreamRecord = serde_json::from_str(&rec_data).map_err(|e| {
+        let rec: crate::store::UpstreamRecord = crate::json::from_str(&rec_data).map_err(|e| {
             Error::Integrity(format!("invalid upstream record {}: {e}", rec_path.display()))
         })?;
         if rec.checksum != pin.checksum {
@@ -59,7 +59,7 @@ pub fn validate_archive(state_dir: &Path, pins_path: &Path) -> Result<Validation
             )));
         }
         let entry: crate::model::IndexEntry =
-            serde_json::from_str(&rec.raw_index_line).map_err(|e| {
+            crate::json::from_str(&rec.raw_index_line).map_err(|e| {
                 Error::Integrity(format!("invalid cached index line for {} {}: {e}", pin.name, pin.version))
             })?;
         if entry.cksum != pin.checksum
@@ -153,7 +153,7 @@ pub fn validate_project(
     }
 
     let content = fs::read_to_string(pins_path)?;
-    let pins: Pins = toml::from_str(&content)
+    let pins: Pins = crate::toml::from_str(&content)
         .map_err(|e| Error::Input(format!("failed to parse pins {}: {e}", pins_path.display())))?;
 
     let Some(ref lock_str) = pins.lock_content else {

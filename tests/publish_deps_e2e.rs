@@ -44,10 +44,10 @@ fn make_upstream_bytes(name: &str, ver: &str) -> (Vec<u8>, String) {
 fn seed(store: &Store, name: &str, vers: &str) {
     let (bytes, sha) = make_upstream_bytes(name, vers);
     store.ingest_blob(&bytes[..]).unwrap();
-    let line = serde_json::json!({
-        "name": name, "vers": vers, "deps": [], "cksum": sha, "features": {}, "yanked": false
-    })
-    .to_string();
+    let line = deser_json::to_string(&deser_value::value!({
+        "name": name, "vers": vers, "deps": [], "cksum": sha.clone(), "features": {}, "yanked": false
+    }))
+    .unwrap();
     store
         .put_upstream_record(&UpstreamRecord {
             name: name.to_string(),

@@ -38,7 +38,7 @@ fn build_wire_payload(body_json: &str, crate_bytes: &[u8]) -> Vec<u8> {
 }
 
 fn body_json(name: &str, vers: &str) -> String {
-    serde_json::json!({
+    deser_json::to_string(&deser_value::value!({
         "name": name,
         "vers": vers,
         "deps": [],
@@ -55,8 +55,8 @@ fn body_json(name: &str, vers: &str) -> String {
         "repository": null,
         "badges": {},
         "links": null
-    })
-    .to_string()
+    }))
+    .unwrap()
 }
 
 struct ProdServer {
@@ -200,15 +200,20 @@ fn production_binary_end_to_end_publish() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let public_base = format!("http://127.0.0.1:{}", port);
-    let cfg_json = serde_json::json!({
+    let limits_val: deser_value::Value =
+        deser_value::to_value(&mycrates::config::LimitsConfig::default()).unwrap();
+    let cfg_val = deser_value::value!({
         "version": 1,
         "public_base_url": public_base,
         "upstream": {"index_url": "https://index.crates.io/"},
-        "limits": mycrates::config::LimitsConfig::default(),
+        "limits": limits_val,
         "auth_required": true
     });
     fs::create_dir_all(&state_dir).unwrap();
-    fs::write(&config_path, serde_json::to_string_pretty(&cfg_json).unwrap()).unwrap();
+    let pretty = deser_json::SerializerConfig::builder()
+        .pretty(deser_json::Indent::Spaces(2))
+        .build();
+    fs::write(&config_path, pretty.to_string(&cfg_val).unwrap()).unwrap();
 
     let bin = env!("CARGO_BIN_EXE_mycrates");
     let mut child = std::process::Command::new(bin)

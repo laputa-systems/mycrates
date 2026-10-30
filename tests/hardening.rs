@@ -63,7 +63,7 @@ fn corrupted_stored_blob_after_publish() {
 
     let server = TestServer::start(state_dir.clone(), site_dir.clone(), "", None, false);
     let crate_bytes = make_test_crate("victim-pkg", "1.0.0");
-    let json = serde_json::json!({
+    let json = deser_json::to_string(&deser_value::value!({
         "name": "victim-pkg",
         "vers": "1.0.0",
         "deps": [],
@@ -80,8 +80,8 @@ fn corrupted_stored_blob_after_publish() {
         "repository": null,
         "badges": {},
         "links": null
-    })
-    .to_string();
+    }))
+    .unwrap();
 
     let payload = build_wire_payload(&json, &crate_bytes);
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", server.port)).unwrap();
@@ -167,7 +167,7 @@ fn concurrent_writers_over_http() {
         let handle = thread::spawn(move || {
             let name = format!("pkg-conc-{}", i);
             let crate_bytes = make_test_crate(&name, "1.0.0");
-            let json = serde_json::json!({
+            let json = deser_json::to_string(&deser_value::value!({
                 "name": name,
                 "vers": "1.0.0",
                 "deps": [],
@@ -184,8 +184,8 @@ fn concurrent_writers_over_http() {
                 "repository": null,
                 "badges": {},
                 "links": null
-            })
-            .to_string();
+            }))
+            .unwrap();
 
             let payload = build_wire_payload(&json, &crate_bytes);
             let mut stream = TcpStream::connect(format!("127.0.0.1:{}", srv.port)).unwrap();
@@ -251,14 +251,14 @@ fn malformed_upload_corpus() {
 
     // 2. Corrupt gzip payload in crate tarball -> 400
     {
-        let json = serde_json::json!({
+        let json = deser_json::to_string(&deser_value::value!({
             "name": "corrupt-gz",
             "vers": "1.0.0",
             "deps": [],
             "features": {},
             "authors": []
-        })
-        .to_string();
+        }))
+        .unwrap();
         let bad_crate = b"not-a-valid-gzip-stream-at-all";
         let wire = build_wire_payload(&json, bad_crate);
 
@@ -278,14 +278,14 @@ fn malformed_upload_corpus() {
     // 3. Name mismatch between JSON metadata and Cargo.toml -> 400
     {
         let crate_bytes = make_test_crate("real-name", "1.0.0");
-        let json = serde_json::json!({
+        let json = deser_json::to_string(&deser_value::value!({
             "name": "different-name",
             "vers": "1.0.0",
             "deps": [],
             "features": {},
             "authors": []
-        })
-        .to_string();
+        }))
+        .unwrap();
         let wire = build_wire_payload(&json, &crate_bytes);
 
         let mut stream = TcpStream::connect(format!("127.0.0.1:{}", server.port)).unwrap();

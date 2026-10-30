@@ -22,20 +22,34 @@ pub fn shard_for_name(name_lower: &str) -> String {
 pub fn native_config_json(public_base_url: &str) -> String {
     let dl = format!("{}/blobs/{{sha256-checksum}}.crate", public_base_url.trim_end_matches('/'));
     let api = public_base_url.to_string();
-    let obj = serde_json::json!({
-        "dl": dl,
-        "api": api,
-        "auth-required": false,
-    });
-    serde_json::to_string(&obj).unwrap()
+    format!(
+        "{{\"dl\":{},\"api\":{},\"auth-required\":false}}",
+        json_str(&dl),
+        json_str(&api)
+    )
 }
 
 pub fn mirror_config_json(public_base_url: &str) -> String {
     let dl = format!("{}/blobs/{{sha256-checksum}}.crate", public_base_url.trim_end_matches('/'));
-    let obj = serde_json::json!({
-        "dl": dl,
-    });
-    serde_json::to_string(&obj).unwrap()
+    format!("{{\"dl\":{}}}", json_str(&dl))
+}
+
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 pub fn publish_to_index(body: &PublishBody) -> Result<IndexEntry> {
@@ -46,10 +60,8 @@ pub fn publish_to_index_with_manifest(
     body: &PublishBody,
     packaged: Option<&crate::crate_file::PackagedManifest>,
 ) -> Result<IndexEntry> {
-    let name = CrateName::new(&body.name)?;
-    let version = Version::new(&body.vers)?;
-    let _ = name;
-    let _ = version.semver();
+    let _ = CrateName::new(&body.name)?;
+    let _ = Version::new(&body.vers)?;
 
     if let Some(manifest) = packaged {
         reconcile_manifest(body, manifest)?;
@@ -73,7 +85,7 @@ pub fn publish_to_index_with_manifest(
         if req.is_empty() {
             return Err(Error::Input(format!("dependency '{dep_name}' missing version_req")));
         }
-        if semver::VersionReq::parse(&req).is_err() {
+        if crate::version::VersionReq::parse(&req).is_err() {
             return Err(Error::Input(format!("dependency '{dep_name}' has invalid version_req '{req}'")));
         }
         if dep_name.is_empty() {
@@ -368,10 +380,10 @@ fn version_req_matches(publish_req: &str, packaged_req: &str) -> bool {
     if normalize_req(publish_req) == normalize_req(packaged_req) {
         return true;
     }
-    let Ok(want) = semver::VersionReq::parse(publish_req) else {
+    let Ok(want) = crate::version::VersionReq::parse(publish_req) else {
         return false;
     };
-    let Ok(have) = semver::VersionReq::parse(packaged_req) else {
+    let Ok(have) = crate::version::VersionReq::parse(packaged_req) else {
         return false;
     };
     if want == have {
@@ -379,10 +391,10 @@ fn version_req_matches(publish_req: &str, packaged_req: &str) -> bool {
     }
     let probes = ["1.0.0", "0.1.0", "0.0.1", "2.0.0", "0.2.0"];
     probes.iter().all(|v| {
-        let ver = semver::Version::parse(v).unwrap();
+        let ver = crate::version::Version::parse(v).unwrap();
         want.matches(&ver) == have.matches(&ver)
     }) && probes.iter().any(|v| {
-        let ver = semver::Version::parse(v).unwrap();
+        let ver = crate::version::Version::parse(v).unwrap();
         want.matches(&ver)
     })
 }
@@ -399,49 +411,82 @@ fn normalize_req(req: &str) -> String {
 }
 
 pub fn serialize_index_line(entry: &IndexEntry) -> Result<String> {
-    let mut obj = serde_json::Map::new();
-    obj.insert("name".to_string(), serde_json::Value::String(entry.name.clone()));
-    obj.insert("vers".to_string(), serde_json::Value::String(entry.vers.clone()));
-    let mut deps_arr = Vec::new();
-    for dep in &entry.deps {
-        let mut d = serde_json::Map::new();
-        d.insert("name".to_string(), serde_json::Value::String(dep.name.clone()));
-        d.insert("req".to_string(), serde_json::Value::String(dep.req.clone()));
-        d.insert("features".to_string(), serde_json::to_value(&dep.features).unwrap());
-        d.insert("optional".to_string(), serde_json::Value::Bool(dep.optional));
-        d.insert("default_features".to_string(), serde_json::Value::Bool(dep.default_features));
+    let mut out = String::new();
+    out.push('{');
+    out.push_str(&format!("\"name\":{},", json_str(&entry.name)));
+    out.push_str(&format!("\"vers\":{},", json_str(&entry.vers)));
+    out.push_str("\"deps\":[");
+    for (i, dep) in entry.deps.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push('{');
+        out.push_str(&format!("\"name\":{},", json_str(&dep.name)));
+        out.push_str(&format!("\"req\":{},", json_str(&dep.req)));
+        out.push_str(&format!("\"features\":{},", str_list_json(&dep.features)));
+        out.push_str(&format!("\"optional\":{},", dep.optional));
+        out.push_str(&format!("\"default_features\":{},", dep.default_features));
         if let Some(ref t) = dep.target {
-            d.insert("target".to_string(), serde_json::Value::String(t.clone()));
+            out.push_str(&format!("\"target\":{},", json_str(t)));
         }
         if let Some(ref k) = dep.kind {
-            d.insert("kind".to_string(), serde_json::Value::String(k.clone()));
+            out.push_str(&format!("\"kind\":{},", json_str(k)));
         }
-        if dep.registry.is_none() {
-            d.insert("registry".to_string(), serde_json::Value::Null);
-        } else if let Some(ref r) = dep.registry {
-            d.insert("registry".to_string(), serde_json::Value::String(r.clone()));
+        match dep.registry.as_ref() {
+            None => out.push_str("\"registry\":null,"),
+            Some(r) => out.push_str(&format!("\"registry\":{},", json_str(r))),
         }
         if let Some(ref p) = dep.package {
-            d.insert("package".to_string(), serde_json::Value::String(p.clone()));
+            out.push_str(&format!("\"package\":{},", json_str(p)));
         }
-        deps_arr.push(serde_json::Value::Object(d));
+        if out.ends_with(',') {
+            out.pop();
+        }
+        out.push('}');
     }
-    obj.insert("deps".to_string(), serde_json::Value::Array(deps_arr));
-    obj.insert("cksum".to_string(), serde_json::Value::String(entry.cksum.clone()));
-    obj.insert("features".to_string(), serde_json::to_value(&entry.features).unwrap());
-    obj.insert("yanked".to_string(), serde_json::Value::Bool(entry.yanked));
+    out.push_str("],");
+    out.push_str(&format!("\"cksum\":{},", json_str(&entry.cksum)));
+    out.push_str(&format!("\"features\":{},", features_json(&entry.features)));
+    out.push_str(&format!("\"yanked\":{}", entry.yanked));
     if let Some(ref links) = entry.links {
-        obj.insert("links".to_string(), serde_json::Value::String(links.clone()));
+        out.push_str(&format!(",\"links\":{}", json_str(links)));
     }
     if let Some(ref rv) = entry.rust_version {
-        obj.insert("rust_version".to_string(), serde_json::Value::String(rv.clone()));
+        out.push_str(&format!(",\"rust_version\":{}", json_str(rv)));
     }
     if let Some(v) = entry.v {
-        obj.insert("v".to_string(), serde_json::Value::Number(serde_json::Number::from(v)));
+        out.push_str(&format!(",\"v\":{v}"));
     }
     for (k, v) in &entry.extra {
-        obj.insert(k.clone(), v.clone());
+        let vs = crate::json::to_string(v).map_err(|e| Error::Operation(e.to_string()))?;
+        out.push_str(&format!(",{}:{}", json_str(k), vs));
     }
-    let s = serde_json::to_string(&obj).map_err(|e| Error::Operation(e.to_string()))?;
-    Ok(s)
+    out.push('}');
+    Ok(out)
+}
+
+fn str_list_json(items: &[String]) -> String {
+    let mut out = String::from("[");
+    for (i, s) in items.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&json_str(s));
+    }
+    out.push(']');
+    out
+}
+
+fn features_json(features: &BTreeMap<String, Vec<String>>) -> String {
+    let mut out = String::from("{");
+    for (i, (k, v)) in features.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&json_str(k));
+        out.push(':');
+        out.push_str(&str_list_json(v));
+    }
+    out.push('}');
+    out
 }

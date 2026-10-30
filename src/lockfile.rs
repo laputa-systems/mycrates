@@ -1,10 +1,10 @@
 use crate::error::{Error, Result};
-use serde::Deserialize;
+use deser::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Lockfile {
     pub version: Option<i32>,
-    #[serde(default)]
+    #[deser(default)]
     pub package: Vec<LockPackage>,
 }
 
@@ -12,11 +12,11 @@ pub struct Lockfile {
 pub struct LockPackage {
     pub name: String,
     pub version: String,
-    #[serde(default)]
+    #[deser(default)]
     pub source: Option<String>,
-    #[serde(default)]
+    #[deser(default)]
     pub checksum: Option<String>,
-    #[serde(default)]
+    #[deser(default)]
     pub dependencies: Vec<String>,
 }
 
@@ -37,13 +37,13 @@ pub struct Classified {
 }
 
 pub fn parse_lockfile(s: &str) -> Result<Lockfile> {
-    let v: toml::Value = toml::from_str(s).map_err(|e| Error::Input(e.to_string()))?;
-    let version = v.get("version").and_then(|x| x.as_integer());
+    let v: crate::toml::Value = crate::toml::from_str(s).map_err(|e| Error::Input(e.to_string()))?;
+    let version = v.get("version").and_then(|x| x.as_i64());
     if let Some(ver) = version
         && ver != 3 && ver != 4 {
         return Err(Error::Input(format!("unknown lock version {}", ver)));
     }
-    let lock: Lockfile = toml::from_str(s).map_err(|e| Error::Input(e.to_string()))?;
+    let lock: Lockfile = crate::toml::from_str(s).map_err(|e| Error::Input(e.to_string()))?;
     if let Some(ver) = lock.version
         && ver != 3 && ver != 4 {
         return Err(Error::Input(format!("unknown lock version {}", ver)));

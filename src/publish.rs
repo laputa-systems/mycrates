@@ -248,8 +248,8 @@ impl<'a> Publisher<'a> {
 
         for (crate_lower, mut recs) in native_by_crate {
             recs.sort_by(|a, b| {
-                let va = semver::Version::parse(&a.vers);
-                let vb = semver::Version::parse(&b.vers);
+                let va = crate::version::Version::parse(&a.vers);
+                let vb = crate::version::Version::parse(&b.vers);
                 match (va, vb) {
                     (Ok(a_ver), Ok(b_ver)) => a_ver.cmp(&b_ver),
                     _ => a.vers.cmp(&b.vers),
@@ -283,8 +283,8 @@ impl<'a> Publisher<'a> {
 
         for (crate_lower, mut recs) in upstream_by_crate {
             recs.sort_by(|a, b| {
-                let va = semver::Version::parse(&a.vers);
-                let vb = semver::Version::parse(&b.vers);
+                let va = crate::version::Version::parse(&a.vers);
+                let vb = crate::version::Version::parse(&b.vers);
                 match (va, vb) {
                     (Ok(a_ver), Ok(b_ver)) => a_ver.cmp(&b_ver),
                     _ => a.vers.cmp(&b.vers),

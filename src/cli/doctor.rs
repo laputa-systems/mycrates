@@ -39,7 +39,7 @@ pub fn run(args: &[String]) -> Result<()> {
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("toml") {
                 let content = fs::read_to_string(&path)?;
-                if let Ok(pins) = toml::from_str::<Pins>(&content) {
+                if let Ok(pins) = crate::toml::from_str::<Pins>(&content) {
                     let proj = pins.project.unwrap_or_else(|| path.display().to_string());
                     if !pins.unsupported.is_empty() {
                         println!("project '{}' has {} unsupported sources:", proj, pins.unsupported.len());

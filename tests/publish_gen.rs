@@ -120,19 +120,19 @@ fn root_and_prefix_hosting_config() {
     let res = publ.publish().unwrap();
 
     let gen_dir = site.join("generations").join(&res.generation_id);
-    let native_cfg: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(gen_dir.join("registry/config.json")).unwrap()).unwrap();
+    let native_cfg: deser_value::Value =
+        deser_json::from_str(&fs::read_to_string(gen_dir.join("registry/config.json")).unwrap()).unwrap();
     assert_eq!(
-        native_cfg["dl"],
-        "https://deps.example.net/mycrates/blobs/{sha256-checksum}.crate"
+        native_cfg["dl"].as_str(),
+        Some("https://deps.example.net/mycrates/blobs/{sha256-checksum}.crate")
     );
-    assert_eq!(native_cfg["api"], "https://deps.example.net/mycrates");
+    assert_eq!(native_cfg["api"].as_str(), Some("https://deps.example.net/mycrates"));
 
-    let mirror_cfg: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(gen_dir.join("crates-io/config.json")).unwrap()).unwrap();
+    let mirror_cfg: deser_value::Value =
+        deser_json::from_str(&fs::read_to_string(gen_dir.join("crates-io/config.json")).unwrap()).unwrap();
     assert_eq!(
-        mirror_cfg["dl"],
-        "https://deps.example.net/mycrates/blobs/{sha256-checksum}.crate"
+        mirror_cfg["dl"].as_str(),
+        Some("https://deps.example.net/mycrates/blobs/{sha256-checksum}.crate")
     );
     assert!(mirror_cfg.get("api").is_none());
 }
@@ -306,7 +306,7 @@ fn interrupted_upload_leaves_no_permanent_partial() {    use mycrates::wire::dec
     let dir = tempdir().unwrap();
     let staging = dir.path().join("blobs");
     fs::create_dir_all(&staging).unwrap();
-    let json = serde_json::json!({"name":"x","vers":"1.0.0","deps":[],"features":{}}).to_string();
+    let json = deser_json::to_string(&deser_value::value!({"name":"x","vers":"1.0.0","deps":[],"features":{}})).unwrap();
     let mut payload = Vec::new();
     payload.extend_from_slice(&(json.len() as u32).to_le_bytes());
     payload.extend_from_slice(json.as_bytes());

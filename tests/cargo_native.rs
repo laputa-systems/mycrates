@@ -140,15 +140,15 @@ fn cross_registry() {
         "pub fn upstream_fn() -> &'static str { \"upstream works\" }",
     );
     let up_sha = store.ingest_blob(&upstream_bytes[..]).unwrap();
-    let up_index_line = serde_json::json!({
+    let up_index_line = deser_json::to_string(&deser_value::value!({
         "name": "mock-upstream",
         "vers": "0.1.0",
         "deps": [],
-        "cksum": up_sha,
+        "cksum": up_sha.clone(),
         "features": {},
         "yanked": false
-    })
-    .to_string();
+    }))
+    .unwrap();
     let up_record = UpstreamRecord {
         name: "mock-upstream".to_string(),
         vers: "0.1.0".to_string(),
@@ -215,20 +215,20 @@ fn cross_registry() {
         index_shard
     };
     let index_content = fs::read_to_string(&actual_index_file).unwrap();
-    let index_json: serde_json::Value = serde_json::from_str(index_content.trim()).unwrap();
-    let deps = index_json["deps"].as_array().unwrap();
+    let index_json: deser_value::Value = deser_json::from_str(index_content.trim()).unwrap();
+    let deps = index_json["deps"].as_seq().unwrap();
 
     // Verify: native dependency has `"registry": null`
-    let native_dep = deps.iter().find(|d| d["name"] == "lib-a").unwrap();
+    let native_dep = deps.iter().find(|d| d["name"].as_str() == Some("lib-a")).unwrap();
     assert!(native_dep["registry"].is_null());
 
     // Verify: crates.io dependency carries crates.io URL
-    let cratesio_dep = deps.iter().find(|d| d["name"] == "renamed-upstream").unwrap();
+    let cratesio_dep = deps.iter().find(|d| d["name"].as_str() == Some("renamed-upstream")).unwrap();
     assert_eq!(
-        cratesio_dep["registry"],
-        "https://github.com/rust-lang/crates.io-index"
+        cratesio_dep["registry"].as_str(),
+        Some("https://github.com/rust-lang/crates.io-index")
     );
-    assert_eq!(cratesio_dep["package"], "mock-upstream");
+    assert_eq!(cratesio_dep["package"].as_str(), Some("mock-upstream"));
 
     // 3. Consumer project compiles and runs
     let consumer_dir = dir.path().join("cross_consumer");
@@ -291,7 +291,7 @@ fn idempotent_and_conflict() {
     let orig_checksum = recs[0].checksum.clone();
     let orig_blob = fs::read(store.blobs_dir().join(format!("{}.crate", orig_checksum))).unwrap();
 
-    let json = serde_json::json!({
+    let json = deser_json::to_string(&deser_value::value!({
         "name": "idem-pkg",
         "vers": "0.1.0",
         "deps": [],
@@ -308,8 +308,8 @@ fn idempotent_and_conflict() {
         "repository": null,
         "badges": {},
         "links": null
-    })
-    .to_string();
+    }))
+    .unwrap();
 
     // 1. Same bytes sent directly to publish API: 200 OK (idempotent no-op)
     {

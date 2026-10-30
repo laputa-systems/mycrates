@@ -47,7 +47,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let pins_path = store.pins_dir().join("default.toml");
     let mut pins = if pins_path.exists() {
         let content = fs::read_to_string(&pins_path)?;
-        toml::from_str(&content).map_err(|e| Error::Input(e.to_string()))?
+        crate::toml::from_str(&content).map_err(|e| Error::Input(e.to_string()))?
     } else {
         Pins::default()
     };

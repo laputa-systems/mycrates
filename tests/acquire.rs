@@ -139,15 +139,15 @@ fn fetch_trust_chain_and_idempotence() {
                 "application/json",
             )
         } else if path == "/8/mo/mock-pkg" || path.ends_with("/mock-pkg") {
-            let line = serde_json::json!({
+            let line = deser_json::to_string(&deser_value::value!({
                 "name": "mock-pkg",
                 "vers": "1.0.0",
                 "deps": [],
-                "cksum": real_sha_clone,
+                "cksum": real_sha_clone.clone(),
                 "features": {},
                 "yanked": false
-            })
-            .to_string();
+            }))
+            .unwrap();
             (200, format!("{line}\n").into_bytes(), "text/plain")
         } else if path.ends_with(".crate") {
             (200, crate_bytes_clone.clone(), "application/x-tar")
@@ -210,15 +210,15 @@ fn lock_index_checksum_mismatch() {
                 "application/json",
             )
         } else if path.ends_with("/mismatch-pkg") {
-            let line = serde_json::json!({
+            let line = deser_json::to_string(&deser_value::value!({
                 "name": "mismatch-pkg",
                 "vers": "1.0.0",
                 "deps": [],
                 "cksum": "different_index_checksum_value",
                 "features": {},
                 "yanked": false
-            })
-            .to_string();
+            }))
+            .unwrap();
             (200, format!("{line}\n").into_bytes(), "text/plain")
         } else {
             (404, b"not found".to_vec(), "text/plain")
@@ -270,15 +270,15 @@ fn download_bytes_checksum_mismatch() {
                 "application/json",
             )
         } else if path.ends_with("/bad-bytes") {
-            let line = serde_json::json!({
+            let line = deser_json::to_string(&deser_value::value!({
                 "name": "bad-bytes",
                 "vers": "1.0.0",
                 "deps": [],
-                "cksum": real_sha_clone,
+                "cksum": real_sha_clone.clone(),
                 "features": {},
                 "yanked": false
-            })
-            .to_string();
+            }))
+            .unwrap();
             (200, format!("{line}\n").into_bytes(), "text/plain")
         } else if path.ends_with(".crate") {
             (200, b"corrupted-tarball-bytes".to_vec(), "application/x-tar")
@@ -329,15 +329,15 @@ fn missing_version_fails_closed() {
                 "application/json",
             )
         } else if path.ends_with("/missing-ver") {
-            let line = serde_json::json!({
+            let line = deser_json::to_string(&deser_value::value!({
                 "name": "missing-ver",
                 "vers": "1.0.1",
                 "deps": [],
                 "cksum": "some_cksum",
                 "features": {},
                 "yanked": false
-            })
-            .to_string();
+            }))
+            .unwrap();
             (200, format!("{line}\n").into_bytes(), "text/plain")
         } else {
             (404, b"not found".to_vec(), "text/plain")
@@ -385,15 +385,15 @@ fn fetch_budget_limit() {
                 "application/json",
             )
         } else if path.ends_with("/budget-pkg") {
-            let line = serde_json::json!({
+            let line = deser_json::to_string(&deser_value::value!({
                 "name": "budget-pkg",
                 "vers": "1.0.0",
                 "deps": [],
-                "cksum": real_sha_clone,
+                "cksum": real_sha_clone.clone(),
                 "features": {},
                 "yanked": false
-            })
-            .to_string();
+            }))
+            .unwrap();
             (200, format!("{line}\n").into_bytes(), "text/plain")
         } else if path.ends_with(".crate") {
             (200, crate_bytes_clone.clone(), "application/x-tar")

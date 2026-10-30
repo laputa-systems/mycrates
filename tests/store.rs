@@ -290,7 +290,7 @@ fn overlapping_normalized_names_across_registries_allowed() {
         name: "foo-bar".to_string(),
         vers: "1.0.0".to_string(),
         checksum: sha.clone(),
-        raw_index_line: serde_json::json!({"name":"foo-bar","vers":"1.0.0","deps":[],"cksum":sha,"features":{},"yanked":false}).to_string(),
+        raw_index_line: deser_json::to_string(&deser_value::value!({"name":"foo-bar","vers":"1.0.0","deps":[],"cksum":sha,"features":{},"yanked":false})).unwrap(),
         acquired_at: 1,
     };
     assert!(store.put_upstream_record(&upstream).unwrap());
