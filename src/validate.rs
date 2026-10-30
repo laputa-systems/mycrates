@@ -214,6 +214,7 @@ pub fn validate_project(
     ));
     let _ = fs::remove_dir_all(&val_tmp);
     fs::create_dir_all(&val_tmp)?;
+    let val_tmp = val_tmp.canonicalize()?;
     let cleanup = ValidateCleanup(val_tmp.clone());
     let test_proj = val_tmp.join("proj");
     copy_project(&actual_proj_dir, &test_proj)?;
