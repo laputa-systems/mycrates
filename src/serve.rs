@@ -6,7 +6,7 @@ use crate::publish::Publisher;
 use crate::store::{NativeRecord, Store};
 use crate::wire::decode_publish_payload;
 use sha2::{Digest, Sha256};
-use std::io::{BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -312,39 +312,27 @@ pub fn handle_connection(stream: TcpStream, cfg: &ServeConfig) -> Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut header_bytes = Vec::new();
 
-    {
-        let mut chunk = [0u8; 1024];
-        let mut line_len: usize = 0;
-        loop {
-            let n = reader.read(&mut chunk)?;
-            if n == 0 {
-                return Ok(());
-            }
-            for &b in &chunk[..n] {
-                header_bytes.push(b);
-                line_len += 1;
-                if header_bytes.len() > 65536 + 4096 {
-                    send_error(&stream, 400, "headers too large");
-                    return Ok(());
-                }
-                if line_len > 8192 + 2 {
-                    send_error(&stream, 400, "header line too long");
-                    return Ok(());
-                }
-                if b == b'\n' {
-                    if header_bytes.ends_with(b"\r\n\r\n") || header_bytes.ends_with(b"\n\n") {
-                        break;
-                    }
-                    line_len = 0;
-                }
-            }
-            if header_bytes.ends_with(b"\r\n\r\n") || header_bytes.ends_with(b"\n\n") {
-                break;
-            }
-            if header_bytes.len() > 65536 {
-                send_error(&stream, 400, "headers too large");
-                return Ok(());
-            }
+    loop {
+        let mut line = Vec::new();
+        let n = reader.read_until(b'\n', &mut line)?;
+        if n == 0 {
+            return Ok(());
+        }
+        if line.len() > 8192 + 2 {
+            send_error(&stream, 400, "header line too long");
+            return Ok(());
+        }
+        header_bytes.extend_from_slice(&line);
+        if header_bytes.len() > 65536 + 4096 {
+            send_error(&stream, 400, "headers too large");
+            return Ok(());
+        }
+        if header_bytes.ends_with(b"\r\n\r\n") || header_bytes.ends_with(b"\n\n") {
+            break;
+        }
+        if header_bytes.len() > 65536 {
+            send_error(&stream, 400, "headers too large");
+            return Ok(());
         }
     }
 
